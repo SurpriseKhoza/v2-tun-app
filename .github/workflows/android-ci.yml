@@ -106,18 +106,15 @@ jobs:
           cp libxray/libXray.aar app/libs/libXray.aar
           ls -lh app/libs/libXray.aar
 
-      - name: Restore production signing keystore
+      - name: Verify committed production signing keystore
         shell: bash
-        env:
-          V2TUN_RELEASE_KEYSTORE_BASE64: ${{ secrets.V2TUN_RELEASE_KEYSTORE_BASE64 }}
         run: |
-          test -n "$V2TUN_RELEASE_KEYSTORE_BASE64"
-          printf '%s' "$V2TUN_RELEASE_KEYSTORE_BASE64" | base64 --decode > app/v2tun-release.jks
-          chmod 600 app/v2tun-release.jks
+          test -s RELEASE_KEYSTORE
+          chmod 600 RELEASE_KEYSTORE
 
       - name: Run V2-TUN unit tests and assemble release APK
         env:
-          V2TUN_RELEASE_KEYSTORE: ${{ github.workspace }}/app/v2tun-release.jks
+          V2TUN_RELEASE_KEYSTORE: ${{ github.workspace }}/RELEASE_KEYSTORE
           V2TUN_RELEASE_STORE_PASSWORD: ${{ secrets.V2TUN_RELEASE_STORE_PASSWORD }}
           V2TUN_RELEASE_KEY_ALIAS: ${{ secrets.V2TUN_RELEASE_KEY_ALIAS }}
           V2TUN_RELEASE_KEY_PASSWORD: ${{ secrets.V2TUN_RELEASE_KEY_PASSWORD }}
