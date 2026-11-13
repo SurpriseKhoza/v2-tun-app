@@ -106,22 +106,21 @@ jobs:
           cp libxray/libXray.aar app/libs/libXray.aar
           ls -lh app/libs/libXray.aar
 
-      - name: Create CI signing keystore
+      - name: Restore production signing keystore
         shell: bash
+        env:
+          V2TUN_RELEASE_KEYSTORE_BASE64: ${{ secrets.V2TUN_RELEASE_KEYSTORE_BASE64 }}
         run: |
-          if [ ! -f app/v2tun-debug.jks ]; then
-            keytool -genkeypair -v \
-              -keystore app/v2tun-debug.jks \
-              -storepass v2tun123 \
-              -keypass v2tun123 \
-              -alias v2tun \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=V2-TUN, OU=CI, O=V2-TUN, L=CI, S=CI, C=US"
-          fi
+          test -n "$V2TUN_RELEASE_KEYSTORE_BASE64"
+          printf '%s' "$V2TUN_RELEASE_KEYSTORE_BASE64" | base64 --decode > app/v2tun-release.jks
+          chmod 600 app/v2tun-release.jks
 
       - name: Run V2-TUN unit tests and assemble release APK
+        env:
+          V2TUN_RELEASE_KEYSTORE: ${{ github.workspace }}/app/v2tun-release.jks
+          V2TUN_RELEASE_STORE_PASSWORD: ${{ secrets.V2TUN_RELEASE_STORE_PASSWORD }}
+          V2TUN_RELEASE_KEY_ALIAS: ${{ secrets.V2TUN_RELEASE_KEY_ALIAS }}
+          V2TUN_RELEASE_KEY_PASSWORD: ${{ secrets.V2TUN_RELEASE_KEY_PASSWORD }}
         run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --no-daemon --stacktrace
 
       - name: Upload release APK

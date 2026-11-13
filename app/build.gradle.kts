@@ -4,6 +4,25 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val releaseKeystorePath = System.getenv("V2TUN_RELEASE_KEYSTORE").orEmpty()
+val releaseStorePassword = System.getenv("V2TUN_RELEASE_STORE_PASSWORD").orEmpty()
+val releaseKeyAlias = System.getenv("V2TUN_RELEASE_KEY_ALIAS").orEmpty()
+val releaseKeyPassword = System.getenv("V2TUN_RELEASE_KEY_PASSWORD").orEmpty()
+val releaseSigningConfigured = listOf(
+    releaseKeystorePath,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword
+).all(String::isNotBlank)
+val releaseRequested = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
+if (releaseRequested && !releaseSigningConfigured) {
+    throw GradleException(
+        "Release signing is not configured. Set V2TUN_RELEASE_KEYSTORE, " +
+            "V2TUN_RELEASE_STORE_PASSWORD, V2TUN_RELEASE_KEY_ALIAS, and " +
+            "V2TUN_RELEASE_KEY_PASSWORD in the build environment."
+    )
+}
+
 android {
     namespace = "io.surprise.vpn"
     compileSdk = 35
@@ -24,11 +43,13 @@ android {
     }
 
     signingConfigs {
-        create("v2tunDebug") {
-            storeFile = file("v2tun-debug.jks")
-            storePassword = "v2tun123"
-            keyAlias = "v2tun"
-            keyPassword = "v2tun123"
+        create("production") {
+            if (releaseSigningConfigured) {
+                storeFile = file(releaseKeystorePath)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
@@ -36,7 +57,6 @@ android {
         debug {
             applicationIdSuffix = ""
             versionNameSuffix = "-debug"
-            signingConfig = signingConfigs.getByName("v2tunDebug")
         }
         release {
             isMinifyEnabled = false
@@ -44,9 +64,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // A debug key makes the downloadable artifact immediately installable.
-            // Replace with your production keystore before publishing to a store.
-            signingConfig = signingConfigs.getByName("v2tunDebug")
+            signingConfig = signingConfigs.getByName("production")
         }
     }
 
