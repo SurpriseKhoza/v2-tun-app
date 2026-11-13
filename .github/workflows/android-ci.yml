@@ -106,25 +106,44 @@ jobs:
           cp libxray/libXray.aar app/libs/libXray.aar
           ls -lh app/libs/libXray.aar
 
-      - name: Verify committed production signing keystore
+      - name: Select APK signing variant
+        id: signing
         shell: bash
+        env:
+          V2TUN_RELEASE_STORE_PASSWORD: ${{ secrets.V2TUN_RELEASE_STORE_PASSWORD }}
+          V2TUN_RELEASE_KEY_ALIAS: ${{ secrets.V2TUN_RELEASE_KEY_ALIAS }}
+          V2TUN_RELEASE_KEY_PASSWORD: ${{ secrets.V2TUN_RELEASE_KEY_PASSWORD }}
         run: |
-          test -s RELEASE_KEYSTORE
-          chmod 600 RELEASE_KEYSTORE
+          if [ -s RELEASE_KEYSTORE ] \
+            && [ -n "$V2TUN_RELEASE_STORE_PASSWORD" ] \
+            && [ -n "$V2TUN_RELEASE_KEY_ALIAS" ] \
+            && [ -n "$V2TUN_RELEASE_KEY_PASSWORD" ]; then
+            chmod 600 RELEASE_KEYSTORE
+            echo "variant=release" >> "$GITHUB_OUTPUT"
+            echo "Production signing configuration found; building release APK."
+          else
+            echo "variant=debug" >> "$GITHUB_OUTPUT"
+            echo "Production signing configuration unavailable; falling back to debug APK."
+          fi
 
-      - name: Run V2-TUN unit tests and assemble release APK
+      - name: Run V2-TUN unit tests and assemble selected APK
         env:
           V2TUN_RELEASE_KEYSTORE: ${{ github.workspace }}/RELEASE_KEYSTORE
           V2TUN_RELEASE_STORE_PASSWORD: ${{ secrets.V2TUN_RELEASE_STORE_PASSWORD }}
           V2TUN_RELEASE_KEY_ALIAS: ${{ secrets.V2TUN_RELEASE_KEY_ALIAS }}
           V2TUN_RELEASE_KEY_PASSWORD: ${{ secrets.V2TUN_RELEASE_KEY_PASSWORD }}
-        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --no-daemon --stacktrace
+        run: |
+          if [ "${{ steps.signing.outputs.variant }}" = "release" ]; then
+            ./gradlew :app:testDebugUnitTest :app:assembleRelease --no-daemon --stacktrace
+          else
+            ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --stacktrace
+          fi
 
-      - name: Upload release APK
+      - name: Upload selected APK
         uses: actions/upload-artifact@v4
         with:
-          name: V2-TUN-release-${{ github.sha }}
-          path: app/build/outputs/apk/release/app-release.apk
+          name: V2-TUN-${{ steps.signing.outputs.variant }}-${{ github.sha }}
+          path: app/build/outputs/apk/${{ steps.signing.outputs.variant }}/app-${{ steps.signing.outputs.variant }}.apk
           if-no-files-found: error
           retention-days: 14
 
