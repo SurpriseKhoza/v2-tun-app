@@ -6,7 +6,7 @@
 *.aab
 
 # Local machine configuration
-local.properties
+# local.properties is intentionally tracked in this private repository.
 .idea/
 .vscode/
 .DS_Store

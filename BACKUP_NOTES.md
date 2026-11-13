@@ -4,9 +4,9 @@ This repository contains the V2-TUN Android source, native Go payload engine, Gr
 
 The following are intentionally excluded from version control:
 
-- `local.properties` and IDE metadata, because they are machine-specific.
-- `*.jks`, `*.keystore`, and other signing material, because private signing keys must not be stored in source control.
+- IDE metadata and machine-specific files other than the explicitly included `local.properties`.
+- Signing material other than the explicitly included `RELEASE_KEYSTORE`.
 - APK/AAB files, `dist/`, Gradle caches, and `build/` directories, because they are generated artifacts.
 - `V2-TUN-MTN-Profile.json`, because it contains supplied SSH credentials. Import it locally when needed rather than publishing it to a repository.
 
-To build on another machine, install Android SDK/JDK/Go as required, copy the project, create a local `local.properties`, and run `./gradlew assembleRelease`.
+This private repository intentionally includes `local.properties` and `RELEASE_KEYSTORE` at the project root for the owner's convenience. Review repository access carefully because anyone with access can retrieve the signing key. Update `local.properties` if the Android SDK path differs, configure the production signing environment variables, install Android SDK/JDK/Go as required, and run `./gradlew assembleRelease`.
