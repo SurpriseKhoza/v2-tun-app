@@ -1,0 +1,134 @@
+name: Android CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-android:
+    name: Build libXray AAR and V2-TUN APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out V2-TUN
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          lfs: true
+
+      - name: Check out SSH-enabled libXray
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: feature/ssh-payload-engine
+          path: libxray
+          fetch-depth: 1
+          token: ${{ github.token }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: libxray/go.sum
+
+      - name: Add Go tools to PATH
+        shell: bash
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018"
+          yes | sdkmanager --licenses >/dev/null || true
+          NDK_DIR="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          test -n "$NDK_DIR"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$NDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Cache Go and Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/go/pkg/mod
+            ~/go/bin/gomobile
+            ~/go/bin/gobind
+          key: android-ci-${{ runner.os }}-${{ hashFiles('**/go.sum', '**/gradle-wrapper.properties', '**/*.gradle*', '**/libs.versions.toml') }}
+          restore-keys: |
+            android-ci-${{ runner.os }}-
+
+      - name: Test libXray
+        working-directory: libxray
+        run: go test ./... -count=1
+
+      - name: Build libXray Android AAR
+        working-directory: libxray
+        env:
+          LIBXRAY_ANDROID_API: '24'
+        run: python3 build/main.py android
+
+      - name: Inject generated AAR into V2-TUN
+        shell: bash
+        run: |
+          test -s libxray/libXray.aar
+          rm -f app/libs/libXray.aar
+          cp libxray/libXray.aar app/libs/libXray.aar
+          ls -lh app/libs/libXray.aar
+
+      - name: Run V2-TUN unit tests and assemble release APK
+        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: V2-TUN-release-${{ github.sha }}
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload generated libXray AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: libXray-ssh-${{ github.sha }}
+          path: libxray/libXray.aar
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-reports-${{ github.sha }}
+          path: |
+            app/build/test-results/**
+            app/build/reports/**
+          if-no-files-found: ignore
+          retention-days: 7
