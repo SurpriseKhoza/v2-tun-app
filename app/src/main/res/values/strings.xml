@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">V2-TUN</string>
+    <string name="notification_channel_name">VPN connection</string>
+    <string name="notification_channel_description">Shows the state and controls for your active V2-TUN tunnel.</string>
+    <string name="notification_connecting">Establishing secure tunnel</string>
+    <string name="notification_connected">Tunnel secured</string>
+    <string name="notification_disconnect">Disconnect</string>
+    <string name="notification_error">Tunnel needs attention</string>
+    <string name="tile_subtitle">Tap to connect</string>
+</resources>

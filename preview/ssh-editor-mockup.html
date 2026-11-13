@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>V2-TUN SSH editor mockup</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap');
+:root{--ink:#050b12;--surface:#0a1420;--raised:#111f2e;--outline:#27394b;--muted:#9eb0c2;--ice:#f4faff;--aqua:#43f5c7;--violet:#8b7cff;--coral:#ff8fa3;--success:#4be0a3}
+*{box-sizing:border-box} body{margin:0;background:#01060b;font-family:Manrope,Arial,sans-serif;color:var(--ice)}
+.canvas{width:900px;min-height:1400px;margin:0 auto;padding:72px 70px;background:radial-gradient(600px 480px at 15% 5%,rgba(67,245,199,.15),transparent 65%),radial-gradient(540px 540px at 90% 30%,rgba(139,124,255,.18),transparent 66%),linear-gradient(145deg,#040b12,#071421 52%,#050a14);display:flex;gap:52px;align-items:flex-start;justify-content:center}
+.phone{width:430px;height:930px;border-radius:42px;padding:11px;background:#121b27;box-shadow:0 30px 90px rgba(0,0,0,.55),0 0 0 1px #324358}
+.screen{height:100%;overflow:hidden;border-radius:33px;background:linear-gradient(180deg,#07111c,#091723 68%,#07101a);position:relative}
+.aurora{position:absolute;inset:0;pointer-events:none;background:radial-gradient(250px 200px at 80% 8%,rgba(139,124,255,.22),transparent 70%),radial-gradient(260px 220px at 18% 50%,rgba(67,245,199,.12),transparent 72%)}
+.status{height:32px;padding:11px 20px 0;display:flex;justify-content:space-between;font-size:10px;color:#c4d5e4;position:relative;z-index:2}.status span:last-child{letter-spacing:2px}
+.content{height:calc(100% - 32px);overflow:hidden;padding:12px 19px 26px;position:relative;z-index:1}
+.topbar{display:flex;align-items:center;gap:11px;margin:2px 0 19px}.back{font-size:26px;color:#d6e6f4;line-height:1}.topbar h1{margin:0;font-size:21px;letter-spacing:-.5px}.topbar .check{margin-left:auto;border:0;border-radius:12px;width:38px;height:38px;color:#07131e;background:linear-gradient(135deg,var(--aqua),#65d9ff);font-weight:800;font-size:19px}
+.eyebrow{font-size:10px;font-weight:800;letter-spacing:1.5px;color:var(--muted);margin:0 0 7px;text-transform:uppercase}.title{font-size:27px;line-height:1.12;letter-spacing:-1px;margin:0 0 8px}.subtitle{font-size:12px;line-height:18px;color:var(--muted);margin:0 0 17px}
+.card{background:linear-gradient(145deg,rgba(17,31,46,.95),rgba(10,20,32,.82));border:1px solid rgba(79,110,137,.38);border-radius:21px;padding:16px;margin-bottom:13px;box-shadow:0 10px 28px rgba(0,0,0,.14)}
+.row{display:flex;gap:9px}.field{flex:1;min-width:0;margin-bottom:12px}.label{font-size:10px;font-weight:800;letter-spacing:.9px;color:#a9bccc;text-transform:uppercase;margin:0 0 6px}.input{height:42px;border:1px solid #31465a;border-radius:12px;background:#0a1623;padding:12px;font-size:13px;color:#edf7ff;white-space:nowrap;overflow:hidden}.input.mono{font-family:'JetBrains Mono',monospace;font-size:12px}.input .dim{color:#6e8498}.section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.section-head strong{font-size:15px}.section-head small{font-size:11px;color:var(--aqua)}
+.modegrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.mode{padding:12px;border:1px solid #30465a;border-radius:14px;background:#0b1724;min-height:66px}.mode.active{border-color:var(--aqua);background:linear-gradient(145deg,rgba(67,245,199,.14),rgba(139,124,255,.13));box-shadow:0 0 0 1px rgba(67,245,199,.16)}.mode b{display:block;font-size:12px;margin-bottom:4px}.mode span{display:block;color:var(--muted);font-size:10px;line-height:14px}.mode.active b{color:var(--aqua)}
+.helper{display:flex;align-items:center;gap:8px;padding:10px 11px;border-radius:12px;background:rgba(67,245,199,.07);color:#b7d8d5;font-size:10px;line-height:15px}.helper .dot{width:7px;height:7px;border-radius:50%;background:var(--aqua);box-shadow:0 0 12px var(--aqua);flex:0 0 auto}
+.switchrow{display:flex;justify-content:space-between;align-items:center;padding:3px 0 0}.switchrow strong{font-size:12px}.switchrow span{display:block;color:var(--muted);font-size:10px;margin-top:3px}.toggle{width:43px;height:24px;border-radius:20px;background:var(--aqua);padding:3px}.toggle i{display:block;width:18px;height:18px;background:#07131e;border-radius:50%;margin-left:19px}
+.save{position:absolute;left:19px;right:19px;bottom:16px;height:48px;border-radius:15px;background:linear-gradient(110deg,var(--aqua),#65d9ff 45%,var(--violet));display:flex;align-items:center;justify-content:center;color:#06111b;font-weight:800;font-size:13px;box-shadow:0 12px 26px rgba(67,245,199,.2)}
+.side{width:265px;padding-top:55px}.side h2{font-size:25px;line-height:1.15;margin:0 0 12px;letter-spacing:-.8px}.side p{color:#a9bccc;font-size:13px;line-height:21px;margin:0 0 20px}.pill{display:inline-flex;border:1px solid rgba(67,245,199,.35);background:rgba(67,245,199,.08);border-radius:99px;padding:7px 10px;color:var(--aqua);font-size:10px;font-weight:800;letter-spacing:.7px;margin-bottom:18px}.note{border-left:2px solid var(--violet);padding-left:13px;color:#b6c5d3;font-size:12px;line-height:19px}.note b{color:#f2f8ff}
+</style>
+</head>
+<body><main class="canvas">
+<section class="phone"><div class="screen"><div class="aurora"></div><div class="status"><span>9:41</span><span>▮▮▮ ᯤ ᘛ</span></div><div class="content">
+<div class="topbar"><div class="back">‹</div><h1>New SSH tunnel</h1><button class="check">✓</button></div>
+<p class="eyebrow">Secure route</p><h2 class="title">Bring your SSH server online.</h2><p class="subtitle">A focused setup for SSH tunneling. The app handles the VPN bridge automatically.</p>
+<div class="card"><div class="section-head"><strong>Profile details</strong><small>Required</small></div>
+<div class="field"><p class="label">Profile name</p><div class="input">Work server</div></div>
+<div class="row"><div class="field"><p class="label">SSH host</p><div class="input mono">ssh.example.net</div></div><div class="field" style="max-width:94px"><p class="label">Port</p><div class="input mono">22</div></div></div>
+<div class="row"><div class="field"><p class="label">Username</p><div class="input">ubuntu</div></div><div class="field"><p class="label">Authentication</p><div class="input">Password&nbsp;&nbsp;⌄</div></div></div>
+<div class="field" style="margin-bottom:0"><p class="label">Password / private key</p><div class="input mono">••••••••••••••</div></div></div>
+<div class="card"><div class="section-head"><strong>Connection method</strong><small>Choose one</small></div><div class="modegrid">
+<div class="mode active"><b>Direct SSH</b><span>Connect directly to the SSH endpoint.</span></div>
+<div class="mode"><b>HTTP payload</b><span>Use a custom request before SSH.</span></div>
+<div class="mode"><b>TLS / SNI</b><span>Secure the outer connection with a server name.</span></div>
+<div class="mode"><b>Proxy</b><span>Reach SSH through an HTTP proxy.</span></div>
+<div class="mode"><b>DNS tunnel</b><span>Use SlowDNS when TCP is restricted.</span></div>
+</div></div>
+<div class="card"><div class="section-head"><strong>Routing</strong><small>VPN bridge</small></div><div class="switchrow"><div><strong>Route all device traffic</strong><span>Use V2-TUN as the system VPN.</span></div><div class="toggle"><i></i></div></div><div style="height:13px"></div><div class="helper"><i class="dot"></i><span>Transport details stay automatic. No WebSocket fields are shown.</span></div></div>
+<div class="save">Validate &nbsp;·&nbsp; Save SSH profile</div>
+</div></div></section>
+<aside class="side"><div class="pill">SSH EDITOR CONCEPT</div><h2>Simple on the surface. Powerful underneath.</h2><p>The editor exposes only the choices users understand: SSH credentials, connection method, and routing. WS/WSS implementation details remain internal.</p><div class="note"><b>Design decision</b><br>Direct SSH, HTTP payload, TLS/SNI, Proxy, and DNS tunnel are user-facing modes. WebSocket is not a visible field or transport selector.</div></aside>
+</main></body></html>

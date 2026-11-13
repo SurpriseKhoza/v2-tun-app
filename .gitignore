@@ -1,0 +1,24 @@
+# Gradle and Android generated output
+.gradle/
+.kotlin/
+**/build/
+*.apk
+*.aab
+
+# Local machine configuration
+local.properties
+.idea/
+.vscode/
+.DS_Store
+
+# Signing material and private credentials
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+.env
+V2-TUN-MTN-Profile.json
+
+# Generated distribution archives/checksums
+dist/

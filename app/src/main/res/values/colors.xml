@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="v2tun_background">#050B12</color>
+    <color name="v2tun_surface">#0A1420</color>
+    <color name="v2tun_accent">#43F5C7</color>
+</resources>
