@@ -50,7 +50,10 @@ object XrayEngine {
             .put("tls", profile.sshTlsEnabled)
             .put("payload", if (profile.sshPayloadEnabled) profile.sshPayload else "")
             .put("maxRedirects", 5)
-            .put("allowRedirectTo", false)
+            // HTTP inject profiles commonly redirect from the front/proxy host
+            // to a TLS/WebSocket edge host. libXray still bounds this to five
+            // hops and rejects every non-accepted status, including all 4xx.
+            .put("allowRedirectTo", true)
             .put("followRedirects", true)
             // Existing V2-TUN SSH profiles used JSch with host-key checking
             // disabled. Preserve that behavior until a fingerprint field is
