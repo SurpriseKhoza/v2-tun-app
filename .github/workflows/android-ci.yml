@@ -106,6 +106,21 @@ jobs:
           cp libxray/libXray.aar app/libs/libXray.aar
           ls -lh app/libs/libXray.aar
 
+      - name: Create CI signing keystore
+        shell: bash
+        run: |
+          if [ ! -f app/v2tun-debug.jks ]; then
+            keytool -genkeypair -v \
+              -keystore app/v2tun-debug.jks \
+              -storepass v2tun123 \
+              -keypass v2tun123 \
+              -alias v2tun \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=V2-TUN, OU=CI, O=V2-TUN, L=CI, S=CI, C=US"
+          fi
+
       - name: Run V2-TUN unit tests and assemble release APK
         run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --no-daemon --stacktrace
 

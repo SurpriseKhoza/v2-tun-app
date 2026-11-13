@@ -28,12 +28,13 @@ object HttpPayloadTester {
             try {
                 HttpPayloadTestResult(
                     success = true,
-                    statusCode = null,
-                    redirects = 0,
-                    websocket = profile.sshPayload.contains("upgrade: websocket", ignoreCase = true),
-                    finalHost = profile.server,
-                    finalPath = "/",
-                    message = "libXray SSH and payload negotiation succeeded on ${bridge.host}:${bridge.port}."
+                    statusCode = bridge.statusCode.takeIf { it > 0 },
+                    redirects = bridge.redirects,
+                    websocket = bridge.webSocket,
+                    finalHost = bridge.finalHost,
+                    finalPath = bridge.finalPath,
+                    message = "libXray SSH and payload negotiation succeeded on ${bridge.host}:${bridge.port}" +
+                        (bridge.statusCode.takeIf { it > 0 }?.let { " (HTTP $it)" } ?: "") + "."
                 )
             } finally {
                 XrayEngine.stopSsh(bridge.sessionId)

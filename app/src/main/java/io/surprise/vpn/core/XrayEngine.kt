@@ -11,7 +11,12 @@ object XrayEngine {
     data class SshBridge(
         val sessionId: String,
         val host: String,
-        val port: Int
+        val port: Int,
+        val statusCode: Int,
+        val redirects: Int,
+        val webSocket: Boolean,
+        val finalHost: String,
+        val finalPath: String
     )
 
     fun run(xrayJson: String): JSONObject {
@@ -67,7 +72,16 @@ object XrayEngine {
         if (sessionId.isBlank() || port !in 1..65535) {
             throw IllegalStateException("The Xray engine returned an invalid SSH bridge.")
         }
-        return SshBridge(sessionId, host, port)
+        return SshBridge(
+            sessionId = sessionId,
+            host = host,
+            port = port,
+            statusCode = data.optInt("statusCode", 0),
+            redirects = data.optInt("redirects", 0),
+            webSocket = data.optBoolean("webSocket", false),
+            finalHost = data.optString("finalHost", profile.server),
+            finalPath = data.optString("finalPath", "/")
+        )
     }
 
     fun stopSsh(sessionId: String): JSONObject {

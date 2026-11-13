@@ -26,7 +26,15 @@ class SshTunnelEngine(
         require(profile.protocol.name == "SSH") { "SSH engine requires an SSH profile" }
         val started = XrayEngine.startSsh(profile)
         bridge = started
-        log("SSH authenticated; libXray SOCKS bridge on ${started.host}:${started.port}", "INFO")
+        val carrier = if (started.statusCode > 0) {
+            "HTTP ${started.statusCode}, redirects=${started.redirects}, websocket=${started.webSocket}"
+        } else {
+            "direct carrier"
+        }
+        log(
+            "SSH authenticated; libXray SOCKS bridge on ${started.host}:${started.port} ($carrier)",
+            "INFO"
+        )
     }
 
     override fun close() {
