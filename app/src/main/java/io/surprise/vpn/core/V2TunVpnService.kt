@@ -212,7 +212,7 @@ class V2TunVpnService : VpnService() {
                     runCatching { coreLogFile?.delete() }
                     coreLogOffset = 0
                     val sshProxyPort = if (profile.protocol == io.surprise.vpn.data.model.VpnProtocol.SSH) {
-                        SshTunnelEngine(profile, ::protect).also {
+                        SshTunnelEngine(profile).also {
                             sshEngine = it
                             it.start()
                         }.localSocksPort

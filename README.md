@@ -49,7 +49,7 @@ Supported share-link imports: SSH, VLESS, VMess, Trojan, Shadowsocks, and raw Xr
 - Bootstrap DNS protected with `LibXray.setDNS`, then reset on disconnect.
 - Foreground service, notification controls, Quick Settings tile, boot auto-connect, and always-on VPN metadata.
 - Live logs from both the app and the Xray engine.
-- SSH profiles use the maintained `com.github.mwiede:jsch:2.28.8` session library and a protected local SOCKS5 bridge. The HTTP-injection adapter supports multi-block payload flows, header placeholders, proxy CONNECT/authentication, redirects, `100 Continue`, `101 Switching Protocols`, TLS/SNI, and binary WebSocket framing without adding WS/WSS fields to the editor. Xray routes TUN traffic into that bridge, keeping the VPN lifecycle in the existing service. See [`SSH-LIBRARY-RESEARCH.md`](SSH-LIBRARY-RESEARCH.md) and [`HTTP-INJECTION-RESEARCH.md`](HTTP-INJECTION-RESEARCH.md).
+- SSH profiles use the independent native Go SSH/payload bridge exposed by the upgraded libXray branch. It provides protected sockets, password or private-key authentication, payload normalization, TLS/SNI, redirects, `100 Continue`, `101 Switching Protocols`, and WebSocket framing without adding WS/WSS fields to the editor. Xray routes TUN traffic into the libXray-owned local SOCKS5 bridge, keeping SSH and VPN lifecycle management in the native engine.
 
 ## Permissions
 
