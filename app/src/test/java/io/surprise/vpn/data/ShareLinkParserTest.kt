@@ -148,4 +148,17 @@ class ShareLinkParserTest {
         assertEquals("/json", profile.path)
         assertTrue(profile.isJsonBacked)
     }
+
+    @Test
+    fun malformedOrUnsupportedJsonDoesNotProduceAnInvalidProfile() {
+        assertTrue(ShareLinkParser.parse("{").isEmpty())
+        assertTrue(ShareLinkParser.parse("{\"outbounds\":[]}").isEmpty())
+        assertTrue(ShareLinkParser.parse("{\"outbounds\":[{\"protocol\":\"freedom\"}]}").isEmpty())
+    }
+
+    @Test
+    fun malformedShareLinksAreIgnoredWithoutThrowing() {
+        assertTrue(ShareLinkParser.parse("vless://%%%broken").isEmpty())
+        assertTrue(ShareLinkParser.parse("not-a-link\n%%%\n").isEmpty())
+    }
 }

@@ -49,6 +49,10 @@ object ShareLinkParser {
             }
         } else root
         val protocol = outbound?.optString("protocol").orEmpty()
+        if (outbound == null) return@runCatching null
+        if (protocol.lowercase() !in setOf("vless", "vmess", "trojan", "shadowsocks")) {
+            return@runCatching null
+        }
         val settings = outbound?.optJSONObject("settings")
         var server = ""
         var port = 443
@@ -74,7 +78,7 @@ object ShareLinkParser {
             }
             else -> Unit
         }
-        if (outbound == null && !root.has("outbounds")) return@runCatching null
+        if (server.isBlank()) return@runCatching null
         val stream = outbound?.optJSONObject("streamSettings")
         val network = stream?.optString("network").orEmpty()
         val security = when (stream?.optString("security")) {

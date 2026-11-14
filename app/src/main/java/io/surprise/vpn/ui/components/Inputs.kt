@@ -284,13 +284,16 @@ fun JsonEditor(
                 color = scheme.onSurfaceVariant.copy(alpha = 0.5f)
             )
         }
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = minHeight.dp)
-                .verticalScroll(rememberScrollState()),
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // The screen itself is vertically scrollable. Keep this
+                    // nested editor bounded so Compose never measures a
+                    // vertically scrollable child with infinite height.
+                    .heightIn(min = minHeight.dp, max = 560.dp)
+                    .verticalScroll(rememberScrollState()),
             textStyle = JsonTextStyle.copy(color = scheme.onSurface),
             cursorBrush = SolidColor(scheme.primary),
             visualTransformation = transformation,

@@ -101,15 +101,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun importText(text: String): ImportSummary {
-        val parsed = ShareLinkParser.parse(text)
+        val parsed = runCatching { ShareLinkParser.parse(text) }.getOrElse {
+            message("Could not read that configuration.", isError = true)
+            TunnelLogs.app("Configuration import failed: ${it.message ?: it::class.simpleName}", "WARN")
+            return ImportSummary(0, emptyList())
+        }
         if (parsed.isEmpty()) {
             message("No supported configuration was found in that text.", isError = true)
             return ImportSummary(0, emptyList())
         }
-        val saved = repository.upsertAll(
-            parsed,
-            selectFirst = !TunnelState.state.value.isActive || repository.selectedProfile.value == null
-        )
+        val saved = runCatching {
+            repository.upsertAll(
+                parsed,
+                selectFirst = !TunnelState.state.value.isActive || repository.selectedProfile.value == null
+            )
+        }.getOrElse {
+            message("Could not save the imported configuration.", isError = true)
+            TunnelLogs.app("Configuration save failed: ${it.message ?: it::class.simpleName}", "WARN")
+            return ImportSummary(0, emptyList())
+        }
         TunnelLogs.app("Imported ${saved.size} configuration(s)")
         message(if (saved.size == 1) "Configuration imported" else "${saved.size} configurations imported")
         return ImportSummary(saved.size, saved.map { it.name })
