@@ -19,6 +19,17 @@ object XrayEngine {
         val finalPath: String
     )
 
+    data class PayloadBridge(
+        val sessionId: String,
+        val host: String,
+        val port: Int,
+        val statusCode: Int,
+        val redirects: Int,
+        val webSocket: Boolean,
+        val finalHost: String,
+        val finalPath: String
+    )
+
     fun run(xrayJson: String): JSONObject {
         val request = JSONObject()
             .put("apiVersion", API_VERSION)
@@ -94,6 +105,48 @@ object XrayEngine {
             .put("method", "stopSSH")
             .put("payload", JSONObject().put("sessionId", sessionId))
         return invoke(request.toString())
+    }
+
+    fun startPayload(profile: VpnProfile): PayloadBridge {
+        require(profile.protocol.name != "SSH") { "Xray payload bridge requires a non-SSH profile" }
+        val proxy = parseProxy(profile.sshRemoteProxy)
+        val config = JSONObject()
+            .put("targetHost", profile.server)
+            .put("targetPort", profile.port)
+            .put("proxyHost", proxy.first)
+            .put("proxyPort", proxy.second)
+            .put("sni", profile.sni.ifBlank { profile.host.ifBlank { profile.server } })
+            .put("tls", profile.sshTlsEnabled)
+            .put("payload", profile.sshPayload)
+            .put("maxRedirects", 5)
+            .put("allowRedirectTo", true)
+            .put("followRedirects", true)
+        val response = invoke(JSONObject()
+            .put("apiVersion", API_VERSION)
+            .put("method", "startPayload")
+            .put("payload", JSONObject().put("config", config))
+            .toString())
+        if (!response.optBoolean("success", false)) throw IllegalStateException(errorMessage(response))
+        val data = response.optJSONObject("data")
+            ?: throw IllegalStateException("The Xray engine returned no payload bridge data.")
+        val sessionId = data.optString("sessionId")
+        val port = data.optInt("port", 0)
+        if (sessionId.isBlank() || port !in 1..65535) throw IllegalStateException("The Xray engine returned an invalid payload bridge.")
+        return PayloadBridge(
+            sessionId, data.optString("host", "127.0.0.1"), port,
+            data.optInt("statusCode", 0), data.optInt("redirects", 0),
+            data.optBoolean("webSocket", false),
+            data.optString("finalHost", profile.server), data.optString("finalPath", "/")
+        )
+    }
+
+    fun stopPayload(sessionId: String): JSONObject {
+        if (sessionId.isBlank()) return JSONObject().put("success", true).put("data", JSONObject())
+        return invoke(JSONObject()
+            .put("apiVersion", API_VERSION)
+            .put("method", "stopPayload")
+            .put("payload", JSONObject().put("sessionId", sessionId))
+            .toString())
     }
 
     fun isRunning(): Boolean {

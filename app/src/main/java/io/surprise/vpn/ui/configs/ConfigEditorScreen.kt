@@ -410,6 +410,7 @@ private fun SshGuidedForm(
     onCopyJson: () -> Unit
 ) {
     var portText by remember(draft.id) { mutableStateOf(draft.port.toString()) }
+    val isSsh = draft.protocol == VpnProtocol.SSH
     LaunchedEffect(draft.port) {
         if (draft.port != 0 && portText.toIntOrNull() != draft.port) portText = draft.port.toString()
     }
@@ -422,7 +423,7 @@ private fun SshGuidedForm(
         onSelect = { onDraftChange(draft.copy(protocol = it)) }
     )
 
-    FormSection(title = "Method", eyebrow = "SSH · CONNECTION") {
+    FormSection(title = "Method", eyebrow = if (isSsh) "SSH · CONNECTION" else "XRAY · CONNECTION") {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             SshToggleChip("Payload", draft.sshPayloadEnabled) {
                 onDraftChange(draft.copy(sshPayloadEnabled = !draft.sshPayloadEnabled))
@@ -432,7 +433,7 @@ private fun SshGuidedForm(
             }
         }
         Text(
-            "Enable only the layers your SSH server requires. V2-TUN hides dependent fields when disabled.",
+            "Enable the shared HTTP payload carrier when your server or front proxy requires it. Dependent fields stay hidden when disabled.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -476,7 +477,7 @@ private fun SshGuidedForm(
         }
     }
 
-    FormSection(title = "Account", eyebrow = "SSH · CREDENTIALS") {
+    FormSection(title = "Account", eyebrow = if (isSsh) "SSH · CREDENTIALS" else "XRAY · CREDENTIALS") {
         V2TextField(
             value = draft.server,
             onValueChange = { onDraftChange(draft.copy(server = it)) },

@@ -45,12 +45,13 @@ object XrayConfigFactory {
         settings: AppSettings,
         tunFd: Int,
         logDirectory: File? = null,
-        proxyPortOverride: Int? = null
+        proxyPortOverride: Int? = null,
+        payloadBridgePortOverride: Int? = null
     ): BuiltXrayConfig {
         val socksPort = proxyPortOverride ?: findFreePort()
         val token = randomToken(12)
         val root = if (profile.jsonConfig.isNullOrBlank()) {
-            guidedRoot(profile, settings, tunFd, socksPort, token, logDirectory)
+            guidedRoot(profile, settings, tunFd, socksPort, token, logDirectory, payloadBridgePortOverride)
         } else {
             customRoot(profile.jsonConfig, settings, tunFd, socksPort, token, logDirectory)
         }
@@ -64,7 +65,7 @@ object XrayConfigFactory {
 
     fun preview(profile: VpnProfile, settings: AppSettings): String {
         val root = if (profile.jsonConfig.isNullOrBlank()) {
-            guidedRoot(profile, settings, 7, 10808, "preview-token", null)
+            guidedRoot(profile, settings, 7, 10808, "preview-token", null, null)
         } else {
             customRoot(profile.jsonConfig, settings, 7, 10808, "preview-token", null)
         }
@@ -94,6 +95,9 @@ object XrayConfigFactory {
                     VpnProtocol.VLESS, VpnProtocol.VMESS -> "The UUID / user ID is required."
                     else -> "The password is required."
                 }
+            }
+            if (profile.protocol != VpnProtocol.SSH && profile.sshPayloadEnabled && profile.sshPayload.isBlank()) {
+                errors += "Payload cannot be empty when Payload is enabled."
             }
             if (profile.protocol == VpnProtocol.SHADOWSOCKS && profile.method.isBlank()) {
                 errors += "Choose a Shadowsocks encryption method."
@@ -139,9 +143,10 @@ object XrayConfigFactory {
         tunFd: Int,
         socksPort: Int,
         token: String,
-        logDirectory: File?
+        logDirectory: File?,
+        payloadBridgePort: Int?
     ): JSONObject {
-        val proxy = outboundFor(profile, socksPort).put("tag", "proxy")
+        val proxy = outboundFor(profile, socksPort, payloadBridgePort).put("tag", "proxy")
         val root = JSONObject()
             .put("log", logObject(settings, logDirectory))
             .put("inbounds", JSONArray().apply {
@@ -232,7 +237,7 @@ object XrayConfigFactory {
         return root
     }
 
-    private fun outboundFor(profile: VpnProfile, sshProxyPort: Int): JSONObject {
+    private fun outboundFor(profile: VpnProfile, sshProxyPort: Int, payloadBridgePort: Int? = null): JSONObject {
         val outbound = JSONObject()
         when (profile.protocol) {
             VpnProtocol.SSH -> {
@@ -248,8 +253,8 @@ object XrayConfigFactory {
                 outbound.put("protocol", "vless")
                 outbound.put("settings", JSONObject().put("vnext", JSONArray().put(
                     JSONObject()
-                        .put("address", profile.server)
-                        .put("port", profile.port)
+                        .put("address", if (payloadBridgePort != null) "127.0.0.1" else profile.server)
+                        .put("port", payloadBridgePort ?: profile.port)
                         .put("users", JSONArray().put(JSONObject()
                             .put("id", profile.secret)
                             .put("encryption", "none")
@@ -261,8 +266,8 @@ object XrayConfigFactory {
                 outbound.put("protocol", "vmess")
                 outbound.put("settings", JSONObject().put("vnext", JSONArray().put(
                     JSONObject()
-                        .put("address", profile.server)
-                        .put("port", profile.port)
+                        .put("address", if (payloadBridgePort != null) "127.0.0.1" else profile.server)
+                        .put("port", payloadBridgePort ?: profile.port)
                         .put("users", JSONArray().put(JSONObject()
                             .put("id", profile.secret)
                             .put("alterId", profile.alterId)
@@ -274,8 +279,8 @@ object XrayConfigFactory {
                 outbound.put("protocol", "trojan")
                 outbound.put("settings", JSONObject().put("servers", JSONArray().put(
                     JSONObject()
-                        .put("address", profile.server)
-                        .put("port", profile.port)
+                        .put("address", if (payloadBridgePort != null) "127.0.0.1" else profile.server)
+                        .put("port", payloadBridgePort ?: profile.port)
                         .put("password", profile.secret)
                 )))
             }
@@ -283,8 +288,8 @@ object XrayConfigFactory {
                 outbound.put("protocol", "shadowsocks")
                 outbound.put("settings", JSONObject().put("servers", JSONArray().put(
                     JSONObject()
-                        .put("address", profile.server)
-                        .put("port", profile.port)
+                        .put("address", if (payloadBridgePort != null) "127.0.0.1" else profile.server)
+                        .put("port", payloadBridgePort ?: profile.port)
                         .put("method", profile.method)
                         .put("password", profile.secret)
                 )))
@@ -297,8 +302,10 @@ object XrayConfigFactory {
         }
         if (profile.protocol == VpnProtocol.SSH) return outbound
 
-        val stream = JSONObject().put("network", profile.transport.wireName)
-        if (profile.security != Security.NONE) {
+        val payloadCarrier = payloadBridgePort != null
+        val stream = JSONObject().put("network", if (payloadCarrier) "tcp" else profile.transport.wireName)
+        if (payloadCarrier) stream.put("security", "none")
+        if (!payloadCarrier && profile.security != Security.NONE) {
             stream.put("security", profile.security.wireName)
             if (profile.security == Security.TLS) {
                 stream.put("tlsSettings", JSONObject()

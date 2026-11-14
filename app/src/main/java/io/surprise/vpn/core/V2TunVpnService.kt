@@ -57,6 +57,7 @@ class V2TunVpnService : VpnService() {
     private var tunInterface: ParcelFileDescriptor? = null
     private var currentProfile: VpnProfile? = null
     private var sshEngine: SshTunnelEngine? = null
+    private var payloadEngine: PayloadTunnelEngine? = null
     private var currentSettings = AppSettings()
     private var coreLogFile: File? = null
     private var coreLogOffset = 0
@@ -223,12 +224,22 @@ class V2TunVpnService : VpnService() {
                             it.start()
                         }.localSocksPort
                     } else null
+                    val payloadBridgePort = if (
+                        profile.protocol != io.surprise.vpn.data.model.VpnProtocol.SSH &&
+                        !profile.isJsonBacked && profile.sshPayloadEnabled
+                    ) {
+                        PayloadTunnelEngine(profile).also {
+                            payloadEngine = it
+                            it.start()
+                        }.localPort
+                    } else null
                     val built = XrayConfigFactory.build(
                         profile,
                         currentSettings,
                         pfd.fd,
                         logDirectory,
-                        proxyPortOverride = sshProxyPort
+                        proxyPortOverride = sshProxyPort,
+                        payloadBridgePortOverride = payloadBridgePort
                     )
                     val response = XrayEngine.run(built.json)
                     if (!response.optBoolean("success", false)) {
@@ -514,6 +525,8 @@ class V2TunVpnService : VpnService() {
         runCatching { XrayEngine.stop() }
         runCatching { sshEngine?.close() }
         sshEngine = null
+        runCatching { payloadEngine?.close() }
+        payloadEngine = null
         closeTunnel()
         TunnelState.clearConnection()
     }
@@ -539,6 +552,8 @@ class V2TunVpnService : VpnService() {
         runCatching { XrayEngine.stop() }
         runCatching { sshEngine?.close() }
         sshEngine = null
+        runCatching { payloadEngine?.close() }
+        payloadEngine = null
         closeTunnel()
         TunnelState.clearConnection()
         scope.cancel()
