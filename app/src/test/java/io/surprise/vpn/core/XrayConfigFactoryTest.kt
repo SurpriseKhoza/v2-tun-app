@@ -96,6 +96,30 @@ class XrayConfigFactoryTest {
     }
 
     @Test
+    fun usesActiveDnsOverrideInsteadOfLocalhost() {
+        val root = JSONObject(
+            XrayConfigFactory.build(
+                vlessProfile(),
+                AppSettings(dnsPrimary = "local", dnsSecondary = "local"),
+                tunFd = 7,
+                dnsServersOverride = listOf("10.123.0.1", "2001:db8::53")
+            ).json
+        )
+        val servers = root.getJSONObject("dns").getJSONArray("servers")
+        assertEquals("10.123.0.1", servers.getString(0))
+        assertEquals("2001:db8::53", servers.getString(1))
+        assertTrue((0 until servers.length()).none { servers.getString(it).contains("localhost") })
+    }
+
+    @Test
+    fun localDnsFallsBackWithoutLoopbackResolver() {
+        val root = JSONObject(XrayConfigFactory.build(vlessProfile(), AppSettings(dnsPrimary = "local"), 7).json)
+        val servers = root.getJSONObject("dns").getJSONArray("servers")
+        assertTrue((0 until servers.length()).none { servers.getString(it).equals("localhost", ignoreCase = true) })
+        assertTrue(servers.length() > 0)
+    }
+
+    @Test
     fun buildsRealitySettings() {
         val profile = vlessProfile().copy(
             security = Security.REALITY,

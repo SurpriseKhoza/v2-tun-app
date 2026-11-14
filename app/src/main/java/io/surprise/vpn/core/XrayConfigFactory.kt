@@ -46,7 +46,8 @@ object XrayConfigFactory {
         tunFd: Int,
         logDirectory: File? = null,
         proxyPortOverride: Int? = null,
-        payloadBridgePortOverride: Int? = null
+        payloadBridgePortOverride: Int? = null,
+        dnsServersOverride: List<String> = emptyList()
     ): BuiltXrayConfig {
         // proxyPortOverride is an already-bound upstream bridge. Xray still
         // needs a separate local SOCKS listener for diagnostics; reusing the
@@ -54,9 +55,9 @@ object XrayConfigFactory {
         val socksPort = findFreePort()
         val token = randomToken(12)
         val root = if (profile.jsonConfig.isNullOrBlank()) {
-            guidedRoot(profile, settings, tunFd, socksPort, token, logDirectory, proxyPortOverride, payloadBridgePortOverride)
+            guidedRoot(profile, settings, tunFd, socksPort, token, logDirectory, proxyPortOverride, payloadBridgePortOverride, dnsServersOverride)
         } else {
-            customRoot(profile.jsonConfig, settings, tunFd, socksPort, token, logDirectory)
+            customRoot(profile.jsonConfig, settings, tunFd, socksPort, token, logDirectory, dnsServersOverride)
         }
         return BuiltXrayConfig(
             json = root.toString(2),
@@ -68,9 +69,9 @@ object XrayConfigFactory {
 
     fun preview(profile: VpnProfile, settings: AppSettings): String {
         val root = if (profile.jsonConfig.isNullOrBlank()) {
-            guidedRoot(profile, settings, 7, 10808, "preview-token", null, null, null)
+            guidedRoot(profile, settings, 7, 10808, "preview-token", null, null, null, emptyList())
         } else {
-            customRoot(profile.jsonConfig, settings, 7, 10808, "preview-token", null)
+            customRoot(profile.jsonConfig, settings, 7, 10808, "preview-token", null, emptyList())
         }
         return root.toString(2)
     }
@@ -148,7 +149,8 @@ object XrayConfigFactory {
         token: String,
         logDirectory: File?,
         proxyPortOverride: Int?,
-        payloadBridgePort: Int?
+        payloadBridgePort: Int?,
+        dnsServersOverride: List<String>
     ): JSONObject {
         val proxy = outboundFor(profile, proxyPortOverride ?: socksPort, payloadBridgePort).put("tag", "proxy")
         val root = JSONObject()
@@ -163,7 +165,7 @@ object XrayConfigFactory {
                 put(dnsOutbound())
                 put(blackholeOutbound())
             })
-            .put("dns", dnsObject(settings))
+            .put("dns", dnsObject(settings, dnsServersOverride))
             .put("routing", JSONObject().put("domainStrategy", "IPIfNonMatch").put("rules", JSONArray().apply {
                 put(JSONObject()
                     .put("type", "field")
@@ -189,7 +191,8 @@ object XrayConfigFactory {
         tunFd: Int,
         socksPort: Int,
         token: String,
-        logDirectory: File?
+        logDirectory: File?,
+        dnsServersOverride: List<String>
     ): JSONObject {
         val parsed = JSONObject(raw)
         val root = if (parsed.has("outbounds")) parsed else JSONObject()
@@ -212,7 +215,7 @@ object XrayConfigFactory {
         )
 
         if (!root.has("log")) root.put("log", logObject(settings, logDirectory))
-        if (!root.has("dns")) root.put("dns", dnsObject(settings))
+        if (!root.has("dns")) root.put("dns", dnsObject(settings, dnsServersOverride))
         if (!root.has("routing")) {
             root.put("routing", JSONObject().put("domainStrategy", "IPIfNonMatch").put("rules", JSONArray().apply {
                 put(JSONObject()
@@ -415,17 +418,23 @@ object XrayConfigFactory {
         return DNS_TAG
     }
 
-    private fun dnsObject(settings: AppSettings): JSONObject {
+    private fun dnsObject(settings: AppSettings, overrideServers: List<String> = emptyList()): JSONObject {
         val servers = JSONArray()
-        listOf(settings.dnsPrimary, settings.dnsSecondary)
+        val configured = if (overrideServers.isNotEmpty()) {
+            overrideServers
+        } else {
+            listOf(settings.dnsPrimary, settings.dnsSecondary)
+        }
+        configured
             .map { it.trim() }
-            .filter { it.isNotBlank() }
+            .filter { it.isNotBlank() && !it.equals("local", ignoreCase = true) && !it.equals("localhost", ignoreCase = true) }
             .distinct()
-            .forEach { value ->
-                servers.put(if (value.equals("local", ignoreCase = true)) "localhost" else value)
-            }
+            .forEach(servers::put)
         if (servers.length() == 0) {
-            servers.put("localhost")
+            // Never emit localhost for the VPN's resolver. Android normally
+            // has no DNS daemon listening on 127.0.0.1/[::1]:53.
+            servers.put("1.1.1.1")
+            servers.put("8.8.8.8")
         }
         return JSONObject().put("servers", servers)
     }

@@ -233,13 +233,23 @@ class V2TunVpnService : VpnService() {
                             it.start()
                         }.localPort
                     } else null
+                    val xrayDnsServers = activeLocalDnsServers()
+                    TunnelLogs.app(
+                        if (xrayDnsServers.isNotEmpty()) {
+                            "Xray DNS: active network (${xrayDnsServers.joinToString()})"
+                        } else {
+                            "Xray DNS: no active resolver reported; using safe public fallback"
+                        },
+                        "INFO"
+                    )
                     val built = XrayConfigFactory.build(
                         profile,
                         currentSettings,
                         pfd.fd,
                         logDirectory,
                         proxyPortOverride = sshProxyPort,
-                        payloadBridgePortOverride = payloadBridgePort
+                        payloadBridgePortOverride = payloadBridgePort,
+                        dnsServersOverride = xrayDnsServers
                     )
                     val response = XrayEngine.run(built.json)
                     if (!response.optBoolean("success", false)) {
