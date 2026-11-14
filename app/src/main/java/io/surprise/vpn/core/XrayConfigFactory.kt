@@ -48,10 +48,13 @@ object XrayConfigFactory {
         proxyPortOverride: Int? = null,
         payloadBridgePortOverride: Int? = null
     ): BuiltXrayConfig {
-        val socksPort = proxyPortOverride ?: findFreePort()
+        // proxyPortOverride is an already-bound upstream bridge. Xray still
+        // needs a separate local SOCKS listener for diagnostics; reusing the
+        // bridge port causes "address already in use" during startup.
+        val socksPort = findFreePort()
         val token = randomToken(12)
         val root = if (profile.jsonConfig.isNullOrBlank()) {
-            guidedRoot(profile, settings, tunFd, socksPort, token, logDirectory, payloadBridgePortOverride)
+            guidedRoot(profile, settings, tunFd, socksPort, token, logDirectory, proxyPortOverride, payloadBridgePortOverride)
         } else {
             customRoot(profile.jsonConfig, settings, tunFd, socksPort, token, logDirectory)
         }
@@ -65,7 +68,7 @@ object XrayConfigFactory {
 
     fun preview(profile: VpnProfile, settings: AppSettings): String {
         val root = if (profile.jsonConfig.isNullOrBlank()) {
-            guidedRoot(profile, settings, 7, 10808, "preview-token", null, null)
+            guidedRoot(profile, settings, 7, 10808, "preview-token", null, null, null)
         } else {
             customRoot(profile.jsonConfig, settings, 7, 10808, "preview-token", null)
         }
@@ -144,9 +147,10 @@ object XrayConfigFactory {
         socksPort: Int,
         token: String,
         logDirectory: File?,
+        proxyPortOverride: Int?,
         payloadBridgePort: Int?
     ): JSONObject {
-        val proxy = outboundFor(profile, socksPort, payloadBridgePort).put("tag", "proxy")
+        val proxy = outboundFor(profile, proxyPortOverride ?: socksPort, payloadBridgePort).put("tag", "proxy")
         val root = JSONObject()
             .put("log", logObject(settings, logDirectory))
             .put("inbounds", JSONArray().apply {

@@ -37,7 +37,10 @@ class XrayConfigFactoryTest {
             .getJSONArray("servers").getJSONObject(0).getString("address"))
         assertEquals(41001, outbound.getJSONObject("settings")
             .getJSONArray("servers").getJSONObject(0).getInt("port"))
-        assertEquals(41001, built.socksPort)
+        assertTrue(built.socksPort in 1..65535)
+        assertTrue(built.socksPort != 41001)
+        assertEquals(built.socksPort, root.getJSONArray("inbounds")
+            .getJSONObject(1).getInt("port"))
     }
 
     @Test
