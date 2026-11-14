@@ -188,16 +188,9 @@ class V2TunVpnService : VpnService() {
                         }.onFailure { TunnelLogs.app("IPv6 interface setup failed: ${it.message}", "WARN") }
                     }
 
-                    val pfd = builder.establish()
-                        ?: throw IllegalStateException("VPN permission was denied. Open V2-TUN and try again.")
-                    tunInterface = pfd
-                    currentProfile = profile
-                    TunnelLogs.app("TUN interface established (fd ${pfd.fd})")
-
-                    // Xray's Go sockets must be protected from the VPN route or they will loop.
+                    // Register protection and install the selected resolver before establishing
+                    // the TUN. This keeps carrier/bootstrap sockets on the underlying network.
                     LibXray.registerDialerController(dialerController)
-                    // Xray resolves its own server hostname before the tunnel is up. Install a
-                    // protected resolver so that bootstrap DNS cannot loop through the TUN.
                     runCatching {
                         val configured = currentSettings.dnsPrimary.trim()
                         val local = configured.isBlank() || configured.equals("local", ignoreCase = true)
@@ -238,6 +231,11 @@ class V2TunVpnService : VpnService() {
                             it.start()
                         }.localPort
                     } else null
+                    val pfd = builder.establish()
+                        ?: throw IllegalStateException("VPN permission was denied. Open V2-TUN and try again.")
+                    tunInterface = pfd
+                    currentProfile = profile
+                    TunnelLogs.app("TUN interface established (fd ${pfd.fd})")
                     val xrayDnsServers = activeLocalDnsServers()
                     TunnelLogs.app(
                         if (xrayDnsServers.isNotEmpty()) {
