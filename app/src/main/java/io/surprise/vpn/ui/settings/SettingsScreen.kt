@@ -156,7 +156,7 @@ fun SettingsScreen(
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Queries are routed into Xray and resolved through these servers. Invalid addresses fall back to 1.1.1.1.",
+                "Use ‘local’ to follow the active network DNS. Enter IP addresses to override it explicitly.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

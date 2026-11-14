@@ -230,7 +230,16 @@ class AppRepository private constructor(context: Context) {
 
     private fun loadSettings(): AppSettings {
         val raw = prefs.getString(KEY_SETTINGS, null) ?: return AppSettings()
-        return runCatching { AppSettings.fromJson(JSONObject(raw)) }.getOrDefault(AppSettings())
+        return runCatching {
+            AppSettings.fromJson(JSONObject(raw)).let { settings ->
+                // Migrate the original untouched defaults to local/system DNS.
+                if (settings.dnsPrimary == "1.1.1.1" && settings.dnsSecondary == "8.8.8.8") {
+                    settings.copy(dnsPrimary = "local", dnsSecondary = "")
+                } else {
+                    settings
+                }
+            }
+        }.getOrDefault(AppSettings())
     }
 
     companion object {

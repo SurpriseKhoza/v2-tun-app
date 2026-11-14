@@ -410,10 +410,11 @@ object XrayConfigFactory {
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()
-            .forEach { servers.put(it) }
+            .forEach { value ->
+                servers.put(if (value.equals("local", ignoreCase = true)) "localhost" else value)
+            }
         if (servers.length() == 0) {
-            servers.put("1.1.1.1")
-            servers.put("8.8.8.8")
+            servers.put("localhost")
         }
         return JSONObject().put("servers", servers)
     }

@@ -193,10 +193,16 @@ class V2TunVpnService : VpnService() {
                     // Xray resolves its own server hostname before the tunnel is up. Install a
                     // protected resolver so that bootstrap DNS cannot loop through the TUN.
                     runCatching {
-                        val configured = currentSettings.dnsPrimary.trim().ifBlank { "1.1.1.1" }
+                        val configured = currentSettings.dnsPrimary.trim()
+                        val local = configured.isBlank() || configured.equals("local", ignoreCase = true)
+                        val source = if (local) activeLocalDnsServers().firstOrNull() else configured
+                        if (source.isNullOrBlank()) {
+                            TunnelLogs.app("Active network did not expose a local DNS server; using Android resolver", "WARN")
+                            return@runCatching
+                        }
                         val resolver = runCatching {
-                            InetAddress.getByName(configured).hostAddress ?: configured
-                        }.getOrDefault(configured)
+                            InetAddress.getByName(source).hostAddress ?: source
+                        }.getOrDefault(source)
                         val endpoint = if (resolver.contains(':') && !resolver.startsWith("[")) {
                             "[$resolver]:53"
                         } else {
@@ -417,10 +423,14 @@ class V2TunVpnService : VpnService() {
     }
 
     private fun addDnsServers(builder: Builder, settings: AppSettings) {
-        val servers = listOf(settings.dnsPrimary, settings.dnsSecondary)
+        val configured = listOf(settings.dnsPrimary, settings.dnsSecondary)
             .map { it.trim() }
             .filter { it.isNotBlank() }
-            .distinct()
+        val servers = if (configured.any { it.equals("local", ignoreCase = true) }) {
+            activeLocalDnsServers()
+        } else {
+            configured
+        }.distinct()
         var added = false
         servers.forEach { server ->
             runCatching {
@@ -428,8 +438,18 @@ class V2TunVpnService : VpnService() {
                 added = true
             }
         }
-        if (!added) runCatching { builder.addDnsServer("1.1.1.1") }
+        if (!added) {
+            TunnelLogs.app("No local DNS server was available for the VPN interface", "WARN")
+        }
     }
+
+    private fun activeLocalDnsServers(): List<String> = runCatching {
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+        val network = connectivity.activeNetwork ?: return emptyList()
+        connectivity.getLinkProperties(network)?.dnsServers
+            ?.mapNotNull { it.hostAddress?.takeIf(String::isNotBlank) }
+            .orEmpty()
+    }.getOrDefault(emptyList())
 
     private fun applyAppRouting(builder: Builder, settings: AppSettings) {
         val packages = settings.appRoutingPackages
