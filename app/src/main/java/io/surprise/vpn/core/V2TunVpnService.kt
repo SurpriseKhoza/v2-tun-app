@@ -142,6 +142,11 @@ class V2TunVpnService : VpnService() {
             tunnelMutex.withLock {
                 try {
                     stopCoreInternal()
+                    // Resolve carrier endpoints before installing the VPN route. Android may
+                    // expose [::1]:53 to Go after establish(), so native payload dialing must
+                    // receive an IP endpoint for the proxy socket. The original host remains
+                    // available to the payload engine for Host/SNI rendering.
+                    val runtimeProfile = resolveBootstrapEndpoints(profile)
                     TunnelState.update {
                         it.copy(
                             status = ConnectionStatus.CONNECTING,
@@ -218,17 +223,17 @@ class V2TunVpnService : VpnService() {
                     coreLogFile = File(logDirectory, "xray-error.log")
                     runCatching { coreLogFile?.delete() }
                     coreLogOffset = 0
-                    val sshProxyPort = if (profile.protocol == io.surprise.vpn.data.model.VpnProtocol.SSH) {
-                        SshTunnelEngine(profile).also {
+                    val sshProxyPort = if (runtimeProfile.protocol == io.surprise.vpn.data.model.VpnProtocol.SSH) {
+                        SshTunnelEngine(runtimeProfile).also {
                             sshEngine = it
                             it.start()
                         }.localSocksPort
                     } else null
                     val payloadBridgePort = if (
-                        profile.protocol != io.surprise.vpn.data.model.VpnProtocol.SSH &&
-                        !profile.isJsonBacked && profile.sshPayloadEnabled
+                        runtimeProfile.protocol != io.surprise.vpn.data.model.VpnProtocol.SSH &&
+                        !runtimeProfile.isJsonBacked && runtimeProfile.sshPayloadEnabled
                     ) {
-                        PayloadTunnelEngine(profile).also {
+                        PayloadTunnelEngine(runtimeProfile).also {
                             payloadEngine = it
                             it.start()
                         }.localPort
@@ -243,7 +248,7 @@ class V2TunVpnService : VpnService() {
                         "INFO"
                     )
                     val built = XrayConfigFactory.build(
-                        profile,
+                        runtimeProfile,
                         currentSettings,
                         pfd.fd,
                         logDirectory,
@@ -441,6 +446,34 @@ class V2TunVpnService : VpnService() {
             }
             TunnelLogs.app("Automatic reconnect attempts exhausted", "ERROR")
         }
+    }
+
+    private fun resolveBootstrapEndpoints(profile: VpnProfile): VpnProfile {
+        fun resolve(host: String): String {
+            if (host.isBlank() || host.toDoubleOrNull() != null || host.contains(':')) return host
+            return runCatching { InetAddress.getAllByName(host).firstOrNull()?.hostAddress ?: host }
+                .onSuccess { resolved ->
+                    if (resolved != host) TunnelLogs.app("Bootstrap DNS: $host → $resolved", "INFO")
+                }
+                .getOrDefault(host)
+        }
+
+        val proxy = profile.sshRemoteProxy.trim()
+        if (proxy.isBlank()) return profile
+        val scheme = when {
+            proxy.startsWith("http://", true) -> "http://"
+            proxy.startsWith("https://", true) -> "https://"
+            else -> ""
+        }
+        val withoutScheme = proxy.removePrefix(scheme).substringBefore('/').substringAfterLast('@')
+        val separator = withoutScheme.lastIndexOf(':')
+        val host = if (separator > 0) withoutScheme.substring(0, separator) else withoutScheme
+        val port = if (separator > 0) withoutScheme.substring(separator + 1) else "8080"
+        val resolvedHost = resolve(host)
+        val resolvedProxy = "$resolvedHost:$port"
+        return profile.copy(
+            sshRemoteProxy = resolvedProxy
+        )
     }
 
     private fun addDnsServers(builder: Builder, settings: AppSettings) {
