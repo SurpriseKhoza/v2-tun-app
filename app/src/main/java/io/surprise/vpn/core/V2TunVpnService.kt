@@ -463,12 +463,22 @@ class V2TunVpnService : VpnService() {
             proxy.startsWith("https://", true) -> "https://"
             else -> ""
         }
-        val withoutScheme = proxy.removePrefix(scheme).substringBefore('/').substringAfterLast('@')
-        val separator = withoutScheme.lastIndexOf(':')
-        val host = if (separator > 0) withoutScheme.substring(0, separator) else withoutScheme
-        val port = if (separator > 0) withoutScheme.substring(separator + 1) else "8080"
+        val withoutScheme = proxy.substring(scheme.length).substringBefore('/').substringAfterLast('@')
+        val (host, port) = when {
+            withoutScheme.startsWith("[") && withoutScheme.indexOf(']') > 1 -> {
+                val end = withoutScheme.indexOf(']')
+                withoutScheme.substring(1, end) to withoutScheme.substring(end + 1).removePrefix(":")
+            }
+            withoutScheme.count { it == ':' } > 1 -> withoutScheme to "8080"
+            else -> {
+                val separator = withoutScheme.lastIndexOf(':')
+                if (separator > 0) withoutScheme.substring(0, separator) to withoutScheme.substring(separator + 1)
+                else withoutScheme to "8080"
+            }
+        }
+        val validPort = port.toIntOrNull()?.takeIf { it in 1..65535 } ?: 8080
         val resolvedHost = resolve(host)
-        val resolvedProxy = "$resolvedHost:$port"
+        val resolvedProxy = if (resolvedHost.contains(':')) "[$resolvedHost]:$validPort" else "$resolvedHost:$validPort"
         return profile.copy(
             sshRemoteProxy = resolvedProxy
         )

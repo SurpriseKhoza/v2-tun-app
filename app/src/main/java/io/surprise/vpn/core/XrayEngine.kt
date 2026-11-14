@@ -170,14 +170,22 @@ object XrayEngine {
 
     private fun parseProxy(value: String): Pair<String, Int> {
         if (value.isBlank()) return "" to 0
-        val normalized = value.trim()
-            .removePrefix("http://")
-            .removePrefix("https://")
+        var normalized = Regex("^https?://", RegexOption.IGNORE_CASE)
+            .replaceFirst(value.trim(), "")
             .substringBefore('/')
             .substringAfterLast('@')
+        if (normalized.startsWith("[")) {
+            val end = normalized.indexOf(']')
+            if (end > 1) {
+                val host = normalized.substring(1, end)
+                val port = normalized.substring(end + 1).removePrefix(":").toIntOrNull()
+                return host to (port?.takeIf { it in 1..65535 } ?: 8080)
+            }
+        }
+        if (normalized.count { it == ':' } > 1) return normalized to 8080
         val separator = normalized.lastIndexOf(':')
         if (separator <= 0) return normalized to 8080
         return normalized.substring(0, separator) to
-            (normalized.substring(separator + 1).toIntOrNull() ?: 8080)
+            (normalized.substring(separator + 1).toIntOrNull()?.takeIf { it in 1..65535 } ?: 8080)
     }
 }
