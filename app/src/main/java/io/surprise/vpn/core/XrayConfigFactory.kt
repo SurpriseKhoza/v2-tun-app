@@ -431,6 +431,14 @@ object XrayConfigFactory {
             .distinct()
             .map(::xrayDnsServer)
             .forEach(servers::put)
+        // Carrier resolvers can return incomplete answers or transient NXDOMAINs.
+        // Keep the active-network DNS first for ISP-local names, then provide
+        // bounded public TCP fallbacks for ordinary Internet domains.
+        if (overrideServers.isNotEmpty()) {
+            listOf("tcp://1.1.1.1:53", "tcp://8.8.8.8:53")
+                .filterNot { fallback -> (0 until servers.length()).any { servers.optString(it) == fallback } }
+                .forEach(servers::put)
+        }
         if (servers.length() == 0) {
             // Never emit localhost for the VPN's resolver. Android normally
             // has no DNS daemon listening on 127.0.0.1/[::1]:53.
