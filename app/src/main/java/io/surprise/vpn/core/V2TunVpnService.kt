@@ -172,6 +172,8 @@ class V2TunVpnService : VpnService() {
                     )
 
                     currentSettings = repository.settings.value
+                    val underlyingNetworks = activeUnderlyingNetworks()
+                    val underlyingDnsServers = activeLocalDnsServers()
                     val builder = Builder()
                         .setSession("V2-TUN · ${profile.name}")
                         .setMtu(currentSettings.mtu.coerceIn(1200, 1500))
@@ -235,8 +237,13 @@ class V2TunVpnService : VpnService() {
                         ?: throw IllegalStateException("VPN permission was denied. Open V2-TUN and try again.")
                     tunInterface = pfd
                     currentProfile = profile
+                    runCatching {
+                        setUnderlyingNetworks(underlyingNetworks.toTypedArray())
+                    }.onFailure {
+                        TunnelLogs.app("Could not pin VPN to the underlying network: ${it.message}", "WARN")
+                    }
                     TunnelLogs.app("TUN interface established (fd ${pfd.fd})")
-                    val xrayDnsServers = activeLocalDnsServers()
+                    val xrayDnsServers = underlyingDnsServers
                     TunnelLogs.app(
                         if (xrayDnsServers.isNotEmpty()) {
                             "Xray DNS: active network (${xrayDnsServers.joinToString()})"
@@ -426,6 +433,15 @@ class V2TunVpnService : VpnService() {
         }
         "Network"
     }.getOrDefault("Network")
+
+    private fun activeUnderlyingNetworks(): List<android.net.Network> = runCatching {
+        val connectivity = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        connectivity.allNetworks.filter { network ->
+            val capabilities = connectivity.getNetworkCapabilities(network) ?: return@filter false
+            !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }
+    }.getOrDefault(emptyList())
 
     private fun scheduleReconnect(profile: VpnProfile) {
         if (reconnectJob?.isActive == true) return
