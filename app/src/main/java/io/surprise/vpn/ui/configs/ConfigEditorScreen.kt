@@ -410,9 +410,15 @@ private fun SshGuidedForm(
     onCopyJson: () -> Unit
 ) {
     var portText by remember(draft.id) { mutableStateOf(draft.port.toString()) }
+    var udpGwPortText by remember(draft.id) { mutableStateOf(draft.sshUdpGwPort.toString()) }
     val isSsh = draft.protocol == VpnProtocol.SSH
     LaunchedEffect(draft.port) {
         if (draft.port != 0 && portText.toIntOrNull() != draft.port) portText = draft.port.toString()
+    }
+    LaunchedEffect(draft.sshUdpGwPort) {
+        if (draft.sshUdpGwPort in 1..65535 && udpGwPortText.toIntOrNull() != draft.sshUdpGwPort) {
+            udpGwPortText = draft.sshUdpGwPort.toString()
+        }
     }
 
     V2Dropdown(
@@ -495,6 +501,19 @@ private fun SshGuidedForm(
             placeholder = "22",
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
         )
+        AnimatedVisibility(visible = isSsh) {
+            V2TextField(
+                value = udpGwPortText,
+                onValueChange = { value ->
+                    val digits = value.filter { it.isDigit() }.take(5)
+                    udpGwPortText = digits
+                    onDraftChange(draft.copy(sshUdpGwPort = digits.toIntOrNull()?.coerceIn(1, 65535) ?: 7300))
+                },
+                label = "BadVPN UDPGW port",
+                placeholder = "7300",
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+        }
         V2TextField(
             value = draft.host,
             onValueChange = { onDraftChange(draft.copy(host = it)) },

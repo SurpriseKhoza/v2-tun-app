@@ -66,6 +66,9 @@ object XrayEngine {
             // hops and rejects every non-accepted status, including all 4xx.
             .put("allowRedirectTo", true)
             .put("followRedirects", true)
+            // BadVPN UDPGW is reached through a second SSH channel.
+            // The remote daemon conventionally listens on 127.0.0.1:7300.
+            .put("udpGwPort", profile.sshUdpGwPort.coerceIn(1, 65535))
             // Existing V2-TUN SSH profiles used JSch with host-key checking
             // disabled. Preserve that behavior until a fingerprint field is
             // added to the profile editor.

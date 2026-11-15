@@ -53,6 +53,7 @@ class AppRepository private constructor(context: Context) {
                 serviceName = profile.serviceName.trim(),
                 sshPayload = profile.sshPayload.trim(),
                 sshRemoteProxy = profile.sshRemoteProxy.trim(),
+                sshUdpGwPort = profile.sshUdpGwPort.coerceIn(1, 65535),
                 sshPrivateKey = profile.sshPrivateKey.trim(),
                 updatedAt = now
             )
