@@ -69,6 +69,9 @@ object XrayEngine {
             // BadVPN UDPGW is reached through a second SSH channel.
             // The remote daemon conventionally listens on 127.0.0.1:7300.
             .put("udpGwPort", profile.sshUdpGwPort.coerceIn(1, 65535))
+            // Optional Linux/Android TCP Fast Open; native dialing falls back
+            // silently when the kernel, carrier, or proxy does not support it.
+            .put("tcpFastOpen", profile.sshTcpFastOpen)
             // Existing V2-TUN SSH profiles used JSch with host-key checking
             // disabled. Preserve that behavior until a fingerprint field is
             // added to the profile editor.

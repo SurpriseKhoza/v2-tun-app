@@ -35,6 +35,7 @@ data class VpnProfile(
     val sshPayload: String = "GET / HTTP/1.1[crlf]Host: [host][crlf]Connection: keep-alive[crlf][crlf]",
     val sshRemoteProxy: String = "",
     val sshUdpGwPort: Int = 7300,
+    val sshTcpFastOpen: Boolean = false,
     val sshPrivateKey: String = "",
     val jsonConfig: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
@@ -82,6 +83,7 @@ data class VpnProfile(
         put("sshPayload", sshPayload)
         put("sshRemoteProxy", sshRemoteProxy)
         put("sshUdpGwPort", sshUdpGwPort)
+        put("sshTcpFastOpen", sshTcpFastOpen)
         put("sshPrivateKey", sshPrivateKey)
         jsonConfig?.let { put("jsonConfig", it) }
         put("createdAt", createdAt)
@@ -117,6 +119,7 @@ data class VpnProfile(
             sshPayload = json.optString("sshPayload", "GET / HTTP/1.1[crlf]Host: [host][crlf]Connection: keep-alive[crlf][crlf]"),
             sshRemoteProxy = json.optString("sshRemoteProxy"),
             sshUdpGwPort = json.optInt("sshUdpGwPort", 7300).coerceIn(1, 65535),
+            sshTcpFastOpen = json.optBoolean("sshTcpFastOpen", false),
             sshPrivateKey = json.optString("sshPrivateKey"),
             jsonConfig = json.optString("jsonConfig").takeIf { it.isNotBlank() },
             createdAt = json.optLong("createdAt", System.currentTimeMillis()),

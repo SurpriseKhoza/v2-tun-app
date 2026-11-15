@@ -140,6 +140,7 @@ fun ConfigEditorScreen(
             sshPayload = parsed.sshPayload,
             sshRemoteProxy = parsed.sshRemoteProxy,
             sshUdpGwPort = parsed.sshUdpGwPort,
+            sshTcpFastOpen = parsed.sshTcpFastOpen,
             sshPrivateKey = parsed.sshPrivateKey
         )
     }
@@ -437,6 +438,11 @@ private fun SshGuidedForm(
             }
             SshToggleChip("TLS", draft.sshTlsEnabled) {
                 onDraftChange(draft.copy(sshTlsEnabled = !draft.sshTlsEnabled))
+            }
+            if (isSsh) {
+                SshToggleChip("Fast Open", draft.sshTcpFastOpen) {
+                    onDraftChange(draft.copy(sshTcpFastOpen = !draft.sshTcpFastOpen))
+                }
             }
         }
         Text(
