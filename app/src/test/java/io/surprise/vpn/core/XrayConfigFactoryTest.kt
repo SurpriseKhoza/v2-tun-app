@@ -106,9 +106,24 @@ class XrayConfigFactoryTest {
             ).json
         )
         val servers = root.getJSONObject("dns").getJSONArray("servers")
-        assertEquals("10.123.0.1", servers.getString(0))
-        assertEquals("2001:db8::53", servers.getString(1))
+        assertEquals("tcp://10.123.0.1", servers.getString(0))
+        assertEquals("tcp://[2001:db8::53]", servers.getString(1))
         assertTrue((0 until servers.length()).none { servers.getString(it).contains("localhost") })
+    }
+
+    @Test
+    fun preservesExplicitDnsSchemeAndPort() {
+        val root = JSONObject(
+            XrayConfigFactory.build(
+                vlessProfile(),
+                AppSettings(dnsPrimary = "local"),
+                tunFd = 7,
+                dnsServersOverride = listOf("tcp://1.1.1.1:53", "https://dns.example/dns-query")
+            ).json
+        )
+        val servers = root.getJSONObject("dns").getJSONArray("servers")
+        assertEquals("tcp://1.1.1.1:53", servers.getString(0))
+        assertEquals("https://dns.example/dns-query", servers.getString(1))
     }
 
     @Test

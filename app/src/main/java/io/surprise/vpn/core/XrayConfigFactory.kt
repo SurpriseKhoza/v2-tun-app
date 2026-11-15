@@ -429,6 +429,7 @@ object XrayConfigFactory {
             .map { it.trim() }
             .filter { it.isNotBlank() && !it.equals("local", ignoreCase = true) && !it.equals("localhost", ignoreCase = true) }
             .distinct()
+            .map(::xrayDnsServer)
             .forEach(servers::put)
         if (servers.length() == 0) {
             // Never emit localhost for the VPN's resolver. Android normally
@@ -437,6 +438,20 @@ object XrayConfigFactory {
             servers.put("8.8.8.8")
         }
         return JSONObject().put("servers", servers)
+    }
+
+    /**
+     * The native SSH SOCKS bridge provides TCP CONNECT, not SOCKS UDP ASSOCIATE.
+     * Use Xray's DNS-over-TCP URI form so resolver traffic can travel through
+     * the same SSH channel instead of being reset by the bridge.
+     */
+    private fun xrayDnsServer(server: String): String {
+        if (server.contains("://")) return server
+        return if (server.count { it == ':' } > 1 && !server.startsWith("[")) {
+            "tcp://[$server]"
+        } else {
+            "tcp://$server"
+        }
     }
 
     private fun logObject(settings: AppSettings, directory: File?): JSONObject {
