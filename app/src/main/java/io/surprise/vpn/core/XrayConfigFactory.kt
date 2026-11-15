@@ -57,7 +57,7 @@ object XrayConfigFactory {
         val root = if (profile.jsonConfig.isNullOrBlank()) {
             guidedRoot(profile, settings, tunFd, socksPort, token, logDirectory, proxyPortOverride, payloadBridgePortOverride, dnsServersOverride)
         } else {
-            customRoot(profile.jsonConfig, settings, tunFd, socksPort, token, logDirectory, dnsServersOverride)
+            customRoot(profile.jsonConfig, settings, tunFd, socksPort, token, logDirectory, dnsServersOverride, proxyPortOverride)
         }
         return BuiltXrayConfig(
             json = root.toString(2),
@@ -71,7 +71,7 @@ object XrayConfigFactory {
         val root = if (profile.jsonConfig.isNullOrBlank()) {
             guidedRoot(profile, settings, 7, 10808, "preview-token", null, null, null, emptyList())
         } else {
-            customRoot(profile.jsonConfig, settings, 7, 10808, "preview-token", null, emptyList())
+            customRoot(profile.jsonConfig, settings, 7, 10808, "preview-token", null, emptyList(), null)
         }
         return root.toString(2)
     }
@@ -192,7 +192,8 @@ object XrayConfigFactory {
         socksPort: Int,
         token: String,
         logDirectory: File?,
-        dnsServersOverride: List<String>
+        dnsServersOverride: List<String>,
+        proxyPortOverride: Int?
     ): JSONObject {
         val parsed = JSONObject(raw)
         val root = if (parsed.has("outbounds")) parsed else JSONObject()
@@ -213,6 +214,7 @@ object XrayConfigFactory {
         val proxyTag = firstTag ?: throw IllegalArgumentException(
             "The JSON configuration needs at least one proxy outbound (VLESS, VMess, Trojan, or Shadowsocks)."
         )
+        rewriteLoopbackSocksOutbound(outbounds, socksPort, proxyPortOverride)
 
         if (!root.has("log")) root.put("log", logObject(settings, logDirectory))
         if (!root.has("dns")) root.put("dns", dnsObject(settings, dnsServersOverride))
@@ -416,6 +418,46 @@ object XrayConfigFactory {
         }
         outbounds.put(dnsOutbound())
         return DNS_TAG
+    }
+
+    /**
+     * Custom JSON is commonly copied from a preview where both the SOCKS
+     * inbound and outbound use 10808. That creates a local routing loop. When
+     * the native SSH bridge has already started, replace only that loopback
+     * endpoint with its dynamically allocated port. For non-SSH JSON profiles,
+     * fail early with an actionable error instead of starting a broken VPN.
+     */
+    private fun rewriteLoopbackSocksOutbound(
+        outbounds: JSONArray,
+        localSocksPort: Int,
+        bridgePort: Int?
+    ) {
+        for (i in 0 until outbounds.length()) {
+            val outbound = outbounds.optJSONObject(i) ?: continue
+            if (outbound.optString("protocol") != "socks") continue
+            val servers = outbound.optJSONObject("settings")?.optJSONArray("servers") ?: continue
+            for (j in 0 until servers.length()) {
+                val server = servers.optJSONObject(j) ?: continue
+                val address = server.optString("address").trim().lowercase()
+                val port = server.optInt("port", -1)
+                val loopback = address == "127.0.0.1" || address == "localhost" || address == "::1"
+                if (!loopback) continue
+                // An SSH-backed custom profile may contain a preview port such
+                // as 10808 rather than the newly allocated diagnostic port.
+                // Once the native bridge exists, every loopback SOCKS target
+                // in that profile must point to the bridge.
+                if (bridgePort != null) {
+                    server.put("address", "127.0.0.1")
+                    server.put("port", bridgePort)
+                    continue
+                }
+                if (port != localSocksPort) continue
+                throw IllegalArgumentException(
+                    "SOCKS outbound points to the V2-TUN inbound port $localSocksPort; " +
+                        "use a guided SSH profile or provide a running upstream bridge."
+                )
+            }
+        }
     }
 
     private fun dnsObject(settings: AppSettings, overrideServers: List<String> = emptyList()): JSONObject {

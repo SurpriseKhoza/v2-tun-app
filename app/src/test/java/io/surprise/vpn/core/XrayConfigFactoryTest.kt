@@ -171,6 +171,25 @@ class XrayConfigFactoryTest {
     }
 
     @Test
+    fun rewritesCustomSocksSelfLoopToRuntimeSshBridge() {
+        val raw = """
+            {
+              "outbounds": [{
+                "tag": "proxy",
+                "protocol": "socks",
+                "settings": {"servers": [{"address": "127.0.0.1", "port": 10808}]}
+              }]
+            }
+        """.trimIndent()
+        val profile = sshProfile().copy(jsonConfig = raw)
+        val root = JSONObject(XrayConfigFactory.build(profile, AppSettings(), 7, proxyPortOverride = 43123).json)
+        val server = root.getJSONArray("outbounds").getJSONObject(0)
+            .getJSONObject("settings").getJSONArray("servers").getJSONObject(0)
+        assertEquals("127.0.0.1", server.getString("address"))
+        assertEquals(43123, server.getInt("port"))
+    }
+
+    @Test
     fun rejectsBlankGuidedProfile() {
         val result = XrayConfigFactory.validate(VpnProfile(), AppSettings())
         assertFalse(result.isValid)
