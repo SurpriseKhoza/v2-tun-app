@@ -139,6 +139,7 @@ fun ConfigEditorScreen(
             sshTlsEnabled = parsed.sshTlsEnabled,
             sshPayload = parsed.sshPayload,
             sshRemoteProxy = parsed.sshRemoteProxy,
+            sshUdpGwPort = parsed.sshUdpGwPort,
             sshPrivateKey = parsed.sshPrivateKey
         )
     }

@@ -176,6 +176,7 @@ object ShareLinkParser {
             source.optBoolean("ssl", false) ||
             source.optBoolean("tlsEnabled", false)
         val port = source.optInt("port", source.optInt("sshPort", 22)).coerceIn(1, 65535)
+        val udpGwPort = source.optInt("udpGwPort", source.optInt("sshUdpGwPort", 7300)).coerceIn(1, 65535)
         return VpnProfile(
             name = firstString(source, "name", "profileName").ifBlank { "SSH · $server" },
             protocol = VpnProtocol.SSH,
@@ -189,6 +190,7 @@ object ShareLinkParser {
                 "GET / HTTP/1.1[crlf]Host: [host][crlf]Connection: keep-alive[crlf][crlf]"
             },
             sshRemoteProxy = proxy,
+            sshUdpGwPort = udpGwPort,
             sni = firstString(source, "sni", "serverName", "frontDomain")
         )
     }

@@ -1,0 +1,14 @@
+{
+  "protocol": "SSH",
+  "name": "MTN1 SSH",
+  "server": "dei.dozapp.xyz",
+  "port": 80,
+  "username": "edozprodoings",
+  "password": "doingsedozpro",
+  "payloadEnabled": true,
+  "tls": false,
+  "payload": "GET / HTTP/1.1[crlf]Host: [host][crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf]User-Agent: V2-TUN[crlf][crlf]",
+  "proxy": "mtnid.za.mtn.com:80",
+  "udpGwPort": 7300,
+  "sni": ""
+}
