@@ -572,8 +572,8 @@ class V2TunVpnService : VpnService() {
         monitorJob = null
         logJob?.cancel()
         logJob = null
-        runCatching { LibXray.resetDNS() }
         runCatching { XrayEngine.stop() }
+        runCatching { LibXray.resetDNS() }
         runCatching { sshEngine?.close() }
         sshEngine = null
         runCatching { payloadEngine?.close() }
@@ -599,8 +599,8 @@ class V2TunVpnService : VpnService() {
         monitorJob?.cancel()
         logJob?.cancel()
         reconnectJob?.cancel()
-        runCatching { LibXray.resetDNS() }
         runCatching { XrayEngine.stop() }
+        runCatching { LibXray.resetDNS() }
         runCatching { sshEngine?.close() }
         sshEngine = null
         runCatching { payloadEngine?.close() }

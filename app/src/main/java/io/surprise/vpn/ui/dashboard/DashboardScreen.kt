@@ -214,15 +214,13 @@ fun DashboardScreen(
         }
 
         item {
-            if (selected == null) {
-                EmptyRouteCard(onCreate = { onOpenEditor(null) })
-            } else {
+            selected?.let { profile ->
                 ActiveRouteCard(
-                    profile = selected!!,
+                    profile = profile,
                     status = tunnel.status,
                     onClick = onOpenConfigs
                 )
-            }
+            } ?: EmptyRouteCard(onCreate = { onOpenEditor(null) })
         }
 
         item {
