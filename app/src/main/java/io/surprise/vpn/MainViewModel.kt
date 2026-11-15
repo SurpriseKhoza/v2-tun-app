@@ -26,6 +26,12 @@ data class UiMessage(val text: String, val isError: Boolean = false)
 
 data class ImportSummary(val count: Int, val names: List<String>)
 
+data class ProfilePingState(
+    val loading: Boolean = false,
+    val result: PingResult? = null,
+    val error: String? = null
+)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = AppRepository.get(application)
@@ -47,6 +53,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val dnsResult: StateFlow<DnsResult?> = _dnsResult.asStateFlow()
     private val _pingResult = MutableStateFlow<PingResult?>(null)
     val pingResult: StateFlow<PingResult?> = _pingResult.asStateFlow()
+    private val _profilePings = MutableStateFlow<Map<String, ProfilePingState>>(emptyMap())
+    val profilePings: StateFlow<Map<String, ProfilePingState>> = _profilePings.asStateFlow()
 
     fun profile(id: String?): VpnProfile? = repository.getProfile(id)
 
@@ -168,6 +176,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { Diagnostics.tcpPing(selectedProfile.value) }
                 .onSuccess { _pingResult.value = it }
                 .onFailure { message(it.message ?: "Server check failed.", isError = true) }
+        }
+    }
+
+    fun pingProfile(profile: VpnProfile) {
+        val current = _profilePings.value[profile.id]
+        if (current?.loading == true) return
+        _profilePings.value = _profilePings.value + (profile.id to ProfilePingState(loading = true))
+        viewModelScope.launch {
+            runCatching { Diagnostics.tcpPing(profile) }
+                .onSuccess { result ->
+                    _profilePings.value = _profilePings.value +
+                        (profile.id to ProfilePingState(result = result))
+                }
+                .onFailure { error ->
+                    _profilePings.value = _profilePings.value +
+                        (profile.id to ProfilePingState(error = error.message ?: "Ping failed"))
+                }
         }
     }
 

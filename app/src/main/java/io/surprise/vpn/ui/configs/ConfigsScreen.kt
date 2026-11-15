@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -60,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.surprise.vpn.MainViewModel
+import io.surprise.vpn.ProfilePingState
 import io.surprise.vpn.data.ShareLinkParser
 import io.surprise.vpn.data.model.ConnectionStatus
 import io.surprise.vpn.data.model.VpnProfile
@@ -69,6 +71,7 @@ import io.surprise.vpn.ui.components.GlassCard
 import io.surprise.vpn.ui.components.GradientButton
 import io.surprise.vpn.ui.components.OutlineButton
 import io.surprise.vpn.ui.components.ProtocolBadge
+import io.surprise.vpn.ui.components.SmallActionChip
 import io.surprise.vpn.ui.components.V2TextField
 import io.surprise.vpn.util.shortEndpoint
 
@@ -82,6 +85,7 @@ fun ConfigsScreen(
     val profiles by viewModel.profiles.collectAsStateWithLifecycle()
     val selected by viewModel.selectedProfile.collectAsStateWithLifecycle()
     val tunnel by viewModel.tunnel.collectAsStateWithLifecycle()
+    val profilePings by viewModel.profilePings.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
 
@@ -241,7 +245,9 @@ fun ConfigsScreen(
                     profile = profile,
                     selected = selected?.id == profile.id,
                     connected = tunnel.status == ConnectionStatus.CONNECTED && tunnel.profileId == profile.id,
+                    pingState = profilePings[profile.id],
                     onSelect = { viewModel.selectProfile(profile.id) },
+                    onPing = { viewModel.pingProfile(profile) },
                     onEdit = { onEdit(profile.id) },
                     onDuplicate = { viewModel.duplicateProfile(profile.id) },
                     onShare = {
@@ -370,7 +376,9 @@ private fun ConfigCard(
     profile: VpnProfile,
     selected: Boolean,
     connected: Boolean,
+    pingState: ProfilePingState?,
     onSelect: () -> Unit,
+    onPing: () -> Unit,
     onEdit: () -> Unit,
     onDuplicate: () -> Unit,
     onShare: () -> Unit,
@@ -452,6 +460,33 @@ private fun ConfigCard(
                         json = profile.isJsonBacked
                     )
                     ProtocolBadge(profile.securityLabel)
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    SmallActionChip(
+                        text = if (pingState?.loading == true) "Pinging…" else "Ping",
+                        onClick = onPing,
+                        icon = Icons.Rounded.Speed,
+                        active = pingState?.result != null
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    when {
+                        pingState?.loading == true -> Text(
+                            "Checking TCP ${profile.port}…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = scheme.onSurfaceVariant
+                        )
+                        pingState?.result != null -> Text(
+                            "${pingState.result.latencyMs} ms",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = scheme.primary
+                        )
+                        !pingState?.error.isNullOrBlank() -> Text(
+                            "Unreachable",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = scheme.error
+                        )
+                    }
                 }
             }
             Box {
