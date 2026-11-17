@@ -16,15 +16,24 @@ class SshTunnelEngine(
     private val log: (String, String) -> Unit = { message, level -> TunnelLogs.app(message, level) }
 ) : Closeable {
     private val closed = AtomicBoolean(false)
+    @Volatile
     private var bridge: XrayEngine.SshBridge? = null
 
     val localSocksPort: Int
         get() = bridge?.port ?: 0
 
-    fun start() {
+    /** Cancellable: cancelling the caller abandons the native handshake and cleans it up. */
+    suspend fun start() {
         check(!closed.get()) { "SSH engine is already closed" }
         require(profile.protocol.name == "SSH") { "SSH engine requires an SSH profile" }
-        val started = XrayEngine.startSsh(profile)
+        val started = runNativeCancellable(
+            name = "ssh-start",
+            onAbandoned = { abandoned -> runCatching { XrayEngine.stopSsh(abandoned.sessionId) } }
+        ) { XrayEngine.startSsh(profile) }
+        if (closed.get()) {
+            runCatching { XrayEngine.stopSsh(started.sessionId) }
+            throw IllegalStateException("SSH engine was closed while starting")
+        }
         bridge = started
         val carrier = if (started.statusCode > 0) {
             "HTTP ${started.statusCode}, redirects=${started.redirects}, websocket=${started.webSocket}"

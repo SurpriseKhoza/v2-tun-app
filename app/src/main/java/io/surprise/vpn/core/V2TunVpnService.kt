@@ -24,6 +24,7 @@ import io.surprise.vpn.data.model.AppSettings
 import io.surprise.vpn.data.model.AppRoutingMode
 import io.surprise.vpn.data.model.ConnectionStatus
 import io.surprise.vpn.data.model.VpnProfile
+import io.surprise.vpn.data.model.VpnProtocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -44,6 +45,15 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.Socket
 import java.util.Collections
+
+/**
+ * Used once the service is gone. With no VPN installed there is nothing to protect
+ * sockets from, and a dead VpnService.protect() would make libXray refuse to dial
+ * (for example in the payload tester).
+ */
+private object PassthroughDialer : DialerController {
+    override fun protectFd(fd: Long): Boolean = true
+}
 
 class V2TunVpnService : VpnService() {
 
@@ -141,164 +151,16 @@ class V2TunVpnService : VpnService() {
         startJob = scope.launch {
             tunnelMutex.withLock {
                 try {
-                    stopCoreInternal()
-                    // Resolve carrier endpoints before installing the VPN route. Android may
-                    // expose [::1]:53 to Go after establish(), so native payload dialing must
-                    // receive an IP endpoint for the proxy socket. The original host remains
-                    // available to the payload engine for Host/SNI rendering.
-                    val runtimeProfile = resolveBootstrapEndpoints(profile)
-                    TunnelState.update {
-                        it.copy(
-                            status = ConnectionStatus.CONNECTING,
-                            profileId = profile.id,
-                            profileName = profile.name,
-                            endpoint = profile.endpoint,
-                            protocolLabel = if (profile.isJsonBacked) "Xray JSON" else profile.protocol.label,
-                            connectedAt = null,
-                            downloadBytes = 0,
-                            uploadBytes = 0,
-                            latencyMs = null,
-                            error = null,
-                            networkLabel = activeNetworkLabel(),
-                            coreVersion = XrayEngine.CORE_VERSION,
-                            tunName = null
-                        )
-                    }
-                    TunnelLogs.app("Connecting to ${profile.name} (${profile.endpoint})")
-                    showForeground(
-                        title = getString(R.string.notification_connecting),
-                        text = "${profile.name} · ${profile.endpoint}",
-                        connectedAt = null
-                    )
-
-                    currentSettings = repository.settings.value
-                    val underlyingNetworks = activeUnderlyingNetworks()
-                    val underlyingDnsServers = activeLocalDnsServers()
-                    val builder = Builder()
-                        .setSession("V2-TUN · ${profile.name}")
-                        .setMtu(currentSettings.mtu.coerceIn(1200, 1500))
-                        .setBlocking(false)
-                        .addAddress(TUN_IPV4_ADDRESS, 32)
-                        .addRoute("0.0.0.0", 0)
-                        .setConfigureIntent(configureIntent())
-                    applyAppRouting(builder, currentSettings)
-                    addDnsServers(builder, currentSettings)
-                    if (currentSettings.ipv6Enabled) {
-                        runCatching {
-                            builder.addAddress(TUN_IPV6_ADDRESS, 128)
-                            builder.addRoute("::", 0)
-                        }.onFailure { TunnelLogs.app("IPv6 interface setup failed: ${it.message}", "WARN") }
-                    }
-
-                    // Register protection and install the selected resolver before establishing
-                    // the TUN. This keeps carrier/bootstrap sockets on the underlying network.
-                    LibXray.registerDialerController(dialerController)
-                    runCatching {
-                        val configured = currentSettings.dnsPrimary.trim()
-                        val local = configured.isBlank() || configured.equals("local", ignoreCase = true)
-                        val source = if (local) activeLocalDnsServers().firstOrNull() else configured
-                        if (source.isNullOrBlank()) {
-                            TunnelLogs.app("Active network did not expose a local DNS server; using Android resolver", "WARN")
-                            return@runCatching
-                        }
-                        val resolver = runCatching {
-                            InetAddress.getByName(source).hostAddress ?: source
-                        }.getOrDefault(source)
-                        val endpoint = if (resolver.contains(':') && !resolver.startsWith("[")) {
-                            "[$resolver]:53"
-                        } else {
-                            "$resolver:53"
-                        }
-                        LibXray.setDNS(dialerController, endpoint)
-                    }.onFailure {
-                        TunnelLogs.app("Protected DNS resolver unavailable: ${it.message}", "WARN")
-                    }
-
-                    val logDirectory = File(filesDir, "logs").apply { mkdirs() }
-                    coreLogFile = File(logDirectory, "xray-error.log")
-                    runCatching { coreLogFile?.delete() }
-                    coreLogOffset = 0
-                    val sshProxyPort = if (runtimeProfile.protocol == io.surprise.vpn.data.model.VpnProtocol.SSH) {
-                        SshTunnelEngine(runtimeProfile).also {
-                            sshEngine = it
-                            it.start()
-                        }.localSocksPort
-                    } else null
-                    val payloadBridgePort = if (
-                        runtimeProfile.protocol != io.surprise.vpn.data.model.VpnProtocol.SSH &&
-                        !runtimeProfile.isJsonBacked && runtimeProfile.sshPayloadEnabled
-                    ) {
-                        PayloadTunnelEngine(runtimeProfile).also {
-                            payloadEngine = it
-                            it.start()
-                        }.localPort
-                    } else null
-                    val pfd = builder.establish()
-                        ?: throw IllegalStateException("VPN permission was denied. Open V2-TUN and try again.")
-                    tunInterface = pfd
-                    currentProfile = profile
-                    runCatching {
-                        setUnderlyingNetworks(underlyingNetworks.toTypedArray())
-                    }.onFailure {
-                        TunnelLogs.app("Could not pin VPN to the underlying network: ${it.message}", "WARN")
-                    }
-                    TunnelLogs.app("TUN interface established (fd ${pfd.fd})")
-                    val xrayDnsServers = underlyingDnsServers
-                    TunnelLogs.app(
-                        if (xrayDnsServers.isNotEmpty()) {
-                            "Xray DNS: active network (${xrayDnsServers.joinToString()})"
-                        } else {
-                            "Xray DNS: no active resolver reported; using safe public fallback"
-                        },
-                        "INFO"
-                    )
-                    val built = XrayConfigFactory.build(
-                        runtimeProfile,
-                        currentSettings,
-                        pfd.fd,
-                        logDirectory,
-                        proxyPortOverride = sshProxyPort,
-                        payloadBridgePortOverride = payloadBridgePort,
-                        dnsServersOverride = xrayDnsServers
-                    )
-                    val response = XrayEngine.run(built.json)
-                    if (!response.optBoolean("success", false)) {
-                        throw IllegalStateException(XrayEngine.errorMessage(response))
-                    }
-
-                    statsBaselineRx = android.net.TrafficStats.getTotalRxBytes().coerceAtLeast(0)
-                    statsBaselineTx = android.net.TrafficStats.getTotalTxBytes().coerceAtLeast(0)
-                    val connectedAt = System.currentTimeMillis()
-                    TunnelState.update {
-                        it.copy(
-                            status = ConnectionStatus.CONNECTED,
-                            connectedAt = connectedAt,
-                            socksPort = built.socksPort,
-                            socksUser = built.socksUser,
-                            socksPassword = built.socksPassword,
-                            latencyMs = null,
-                            error = null,
-                            networkLabel = activeNetworkLabel(),
-                            coreVersion = XrayEngine.CORE_VERSION
-                        )
-                    }
-                    TunnelLogs.app("Tunnel secured through ${profile.endpoint}")
-                    showForeground(
-                        title = getString(R.string.notification_connected),
-                        text = "${profile.name} · ${profile.endpoint}",
-                        connectedAt = connectedAt
-                    )
-                    startCoreLogTail()
-                    startMonitor()
+                    connectLocked(profile)
                 } catch (cancelled: CancellationException) {
-                    closeTunnel()
+                    stopCoreInternal()
                     throw cancelled
                 } catch (t: Throwable) {
                     Log.e(TAG, "Tunnel start failed", t)
                     val message = friendlyError(t)
                     TunnelLogs.app("Connection failed: $message", "ERROR")
-                    runCatching { LibXray.resetDNS() }
-                    closeTunnel()
+                    // Fully release the SSH/payload bridge and Xray, not just the TUN.
+                    stopCoreInternal()
                     TunnelState.fail(message)
                     showForeground(
                         title = getString(R.string.notification_error),
@@ -310,6 +172,162 @@ class V2TunVpnService : VpnService() {
                 }
             }
         }
+    }
+
+    /**
+     * Brings the tunnel up. Must be called while holding [tunnelMutex]. Throws on failure;
+     * callers own cleanup and error reporting so start and reconnect can share this path.
+     */
+    private suspend fun connectLocked(profile: VpnProfile) {
+        stopCoreInternal()
+        // Resolve carrier endpoints before installing the VPN route. Android may
+        // expose [::1]:53 to Go after establish(), so native payload dialing must
+        // receive an IP endpoint for the proxy socket. The original host remains
+        // available to the payload engine for Host/SNI rendering.
+        val runtimeProfile = resolveBootstrapEndpoints(profile)
+        TunnelState.update {
+            it.copy(
+                status = ConnectionStatus.CONNECTING,
+                profileId = profile.id,
+                profileName = profile.name,
+                endpoint = profile.endpoint,
+                protocolLabel = if (profile.isJsonBacked) "Xray JSON" else profile.protocol.label,
+                connectedAt = null,
+                downloadBytes = 0,
+                uploadBytes = 0,
+                latencyMs = null,
+                error = null,
+                networkLabel = activeNetworkLabel(),
+                coreVersion = XrayEngine.CORE_VERSION,
+                tunName = null
+            )
+        }
+        TunnelLogs.app("Connecting to ${profile.name} (${profile.endpoint})")
+        showForeground(
+            title = getString(R.string.notification_connecting),
+            text = "${profile.name} · ${profile.endpoint}",
+            connectedAt = null
+        )
+
+        currentSettings = repository.settings.value
+        val underlyingNetworks = activeUnderlyingNetworks()
+        val underlyingDnsServers = activeLocalDnsServers()
+        val builder = Builder()
+            .setSession("V2-TUN · ${profile.name}")
+            .setMtu(currentSettings.mtu.coerceIn(1200, 1500))
+            .setBlocking(false)
+            .addAddress(TUN_IPV4_ADDRESS, 32)
+            .addRoute("0.0.0.0", 0)
+            .setConfigureIntent(configureIntent())
+        applyAppRouting(builder, currentSettings)
+        addDnsServers(builder, currentSettings)
+        if (currentSettings.ipv6Enabled) {
+            runCatching {
+                builder.addAddress(TUN_IPV6_ADDRESS, 128)
+                builder.addRoute("::", 0)
+            }.onFailure { TunnelLogs.app("IPv6 interface setup failed: ${it.message}", "WARN") }
+        }
+
+        // Register protection and install the selected resolver before establishing
+        // the TUN. This keeps carrier/bootstrap sockets on the underlying network.
+        LibXray.registerDialerController(dialerController)
+        runCatching {
+            val configured = currentSettings.dnsPrimary.trim()
+            val local = configured.isBlank() || configured.equals("local", ignoreCase = true)
+            val source = if (local) activeLocalDnsServers().firstOrNull() else configured
+            if (source.isNullOrBlank()) {
+                TunnelLogs.app("Active network did not expose a local DNS server; using Android resolver", "WARN")
+                return@runCatching
+            }
+            val resolver = runCatching {
+                InetAddress.getByName(source).hostAddress ?: source
+            }.getOrDefault(source)
+            val endpoint = if (resolver.contains(':') && !resolver.startsWith("[")) {
+                "[$resolver]:53"
+            } else {
+                "$resolver:53"
+            }
+            LibXray.setDNS(dialerController, endpoint)
+        }.onFailure {
+            TunnelLogs.app("Protected DNS resolver unavailable: ${it.message}", "WARN")
+        }
+
+        val logDirectory = File(filesDir, "logs").apply { mkdirs() }
+        coreLogFile = File(logDirectory, "xray-error.log")
+        runCatching { coreLogFile?.delete() }
+        coreLogOffset = 0
+        val sshProxyPort = if (runtimeProfile.protocol == VpnProtocol.SSH) {
+            val engine = SshTunnelEngine(runtimeProfile)
+            sshEngine = engine
+            engine.start()
+            engine.localSocksPort
+        } else null
+        val payloadBridgePort = if (
+            runtimeProfile.protocol != VpnProtocol.SSH &&
+            !runtimeProfile.isJsonBacked && runtimeProfile.sshPayloadEnabled
+        ) {
+            val engine = PayloadTunnelEngine(runtimeProfile)
+            payloadEngine = engine
+            engine.start()
+            engine.localPort
+        } else null
+        val pfd = builder.establish()
+            ?: throw IllegalStateException("VPN permission was denied. Open V2-TUN and try again.")
+        tunInterface = pfd
+        currentProfile = profile
+        runCatching {
+            setUnderlyingNetworks(underlyingNetworks.toTypedArray())
+        }.onFailure {
+            TunnelLogs.app("Could not pin VPN to the underlying network: ${it.message}", "WARN")
+        }
+        TunnelLogs.app("TUN interface established (fd ${pfd.fd})")
+        val xrayDnsServers = underlyingDnsServers
+        TunnelLogs.app(
+            if (xrayDnsServers.isNotEmpty()) {
+                "Xray DNS: active network (${xrayDnsServers.joinToString()})"
+            } else {
+                "Xray DNS: no active resolver reported; using safe public fallback"
+            },
+            "INFO"
+        )
+        val built = XrayConfigFactory.build(
+            runtimeProfile,
+            currentSettings,
+            pfd.fd,
+            logDirectory,
+            proxyPortOverride = sshProxyPort,
+            payloadBridgePortOverride = payloadBridgePort,
+            dnsServersOverride = xrayDnsServers
+        )
+        val response = XrayEngine.run(built.json)
+        if (!response.optBoolean("success", false)) {
+            throw IllegalStateException(XrayEngine.errorMessage(response))
+        }
+
+        statsBaselineRx = android.net.TrafficStats.getTotalRxBytes().coerceAtLeast(0)
+        statsBaselineTx = android.net.TrafficStats.getTotalTxBytes().coerceAtLeast(0)
+        val connectedAt = System.currentTimeMillis()
+        TunnelState.update {
+            it.copy(
+                status = ConnectionStatus.CONNECTED,
+                connectedAt = connectedAt,
+                socksPort = built.socksPort,
+                socksUser = built.socksUser,
+                socksPassword = built.socksPassword,
+                latencyMs = null,
+                error = null,
+                networkLabel = activeNetworkLabel(),
+                coreVersion = XrayEngine.CORE_VERSION
+            )
+        }
+        TunnelLogs.app("Tunnel secured through ${profile.endpoint}")
+        showForeground(
+            title = getString(R.string.notification_connected),
+            text = "${profile.name} · ${profile.endpoint}",
+            connectedAt = connectedAt
+        )
+        startCoreLogTail()
+        startMonitor()
     }
 
     private fun startMonitor() {
@@ -443,22 +461,46 @@ class V2TunVpnService : VpnService() {
         }
     }.getOrDefault(emptyList())
 
+    /**
+     * Reconnects after a network change. Every attempt runs entirely under [tunnelMutex], so a
+     * slow connect can never be torn down by the next attempt, and a failed attempt is retried
+     * instead of stopping the service (which would cancel this job).
+     */
     private fun scheduleReconnect(profile: VpnProfile) {
         if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             val attempts = currentSettings.reconnectAttempts.coerceIn(1, 10)
-            repeat(attempts) { attempt ->
-                if (!isActive) return@launch
-                delay((attempt + 1) * 1_000L)
-                tunnelMutex.withLock { stopCoreInternal() }
-                TunnelLogs.app("Reconnecting after network change (${attempt + 1}/$attempts)", "INFO")
-                startTunnel(profile)
-                repeat(20) {
-                    delay(500)
-                    if (TunnelState.state.value.status == ConnectionStatus.CONNECTED) return@launch
+            for (attempt in 1..attempts) {
+                delay(attempt * 1_000L)
+                val connected = tunnelMutex.withLock {
+                    try {
+                        TunnelLogs.app("Reconnecting after network change ($attempt/$attempts)", "INFO")
+                        connectLocked(profile)
+                        true
+                    } catch (cancelled: CancellationException) {
+                        stopCoreInternal()
+                        throw cancelled
+                    } catch (t: Throwable) {
+                        TunnelLogs.app("Reconnect attempt $attempt failed: ${friendlyError(t)}", "WARN")
+                        stopCoreInternal()
+                        false
+                    }
                 }
+                if (connected) return@launch
             }
+            val message = "Could not reconnect after the network changed."
             TunnelLogs.app("Automatic reconnect attempts exhausted", "ERROR")
+            tunnelMutex.withLock {
+                stopCoreInternal()
+                TunnelState.fail(message)
+                showForeground(
+                    title = getString(R.string.notification_error),
+                    text = message,
+                    connectedAt = null
+                )
+            }
+            delay(1200)
+            withContext(Dispatchers.Main) { stopSelf() }
         }
     }
 
@@ -478,6 +520,12 @@ class V2TunVpnService : VpnService() {
             proxy.startsWith("http://", true) -> "http://"
             proxy.startsWith("https://", true) -> "https://"
             else -> ""
+        }
+        if (proxy.substring(scheme.length).substringBefore('/').contains('@')) {
+            TunnelLogs.app(
+                "Proxy credentials are not sent. Add a Proxy-Authorization header to the payload if the proxy requires login.",
+                "WARN"
+            )
         }
         val withoutScheme = proxy.substring(scheme.length).substringBefore('/').substringAfterLast('@')
         val (host, port) = when {
@@ -536,9 +584,19 @@ class V2TunVpnService : VpnService() {
             .distinct()
         when (settings.appRoutingMode) {
             AppRoutingMode.ALL -> runCatching { builder.addDisallowedApplication(packageName) }
-            AppRoutingMode.ALLOWLIST -> packages.forEach { app ->
-                runCatching { builder.addAllowedApplication(app) }
-                    .onFailure { TunnelLogs.app("Skipping unavailable allowed app $app", "WARN") }
+            AppRoutingMode.ALLOWLIST -> {
+                var allowed = 0
+                packages.forEach { app ->
+                    runCatching { builder.addAllowedApplication(app) }
+                        .onSuccess { allowed++ }
+                        .onFailure { TunnelLogs.app("Skipping unavailable allowed app $app", "WARN") }
+                }
+                // An empty allowlist makes Android tunnel every app, the opposite of intent.
+                if (allowed == 0) {
+                    throw IllegalStateException(
+                        "No usable apps are selected for the allowlist. Choose at least one installed app or switch the routing mode."
+                    )
+                }
             }
             AppRoutingMode.BLOCKLIST -> {
                 runCatching { builder.addDisallowedApplication(packageName) }
@@ -623,6 +681,9 @@ class V2TunVpnService : VpnService() {
         payloadEngine = null
         closeTunnel()
         TunnelState.clearConnection()
+        // The service is going away, so protect() is no longer valid. Swap in a passthrough
+        // controller so later non-VPN dials (payload tester) are not rejected by libXray.
+        runCatching { LibXray.registerDialerController(PassthroughDialer) }
         scope.cancel()
         super.onDestroy()
     }
@@ -699,7 +760,13 @@ class V2TunVpnService : VpnService() {
     private fun friendlyError(t: Throwable): String {
         val raw = t.message.orEmpty()
         return when {
-            raw.contains("permission", ignoreCase = true) -> "Android denied VPN permission. Try connecting again from the app."
+            t is SecurityException ||
+                raw.contains("vpn permission", ignoreCase = true) ||
+                raw.contains("not prepared", ignoreCase = true) ->
+                "Android denied VPN permission. Try connecting again from the app."
+            raw.contains("permission denied", ignoreCase = true) ||
+                raw.contains("unable to authenticate", ignoreCase = true) ->
+                "SSH login failed. Check the username, password, or private key."
             raw.contains("address already in use", ignoreCase = true) -> "A local tunnel port was already in use. Try again."
             raw.isBlank() -> "The tunnel could not start. Check the server configuration and try again."
             else -> raw.take(240)
