@@ -139,9 +139,11 @@ fun ConfigEditorScreen(
             sshTlsEnabled = parsed.sshTlsEnabled,
             sshPayload = parsed.sshPayload,
             sshRemoteProxy = parsed.sshRemoteProxy,
-            sshUdpGwPort = parsed.sshUdpGwPort,
-            sshTcpFastOpen = parsed.sshTcpFastOpen,
-            sshPrivateKey = parsed.sshPrivateKey
+            // Links and JSON that do not carry these values must not reset what the user
+            // already configured (share links omit the private key by design).
+            sshUdpGwPort = if (parsed.sshUdpGwPort != 7300) parsed.sshUdpGwPort else draft.sshUdpGwPort,
+            sshTcpFastOpen = parsed.sshTcpFastOpen || draft.sshTcpFastOpen,
+            sshPrivateKey = parsed.sshPrivateKey.ifBlank { draft.sshPrivateKey }
         )
     }
 
@@ -483,7 +485,7 @@ private fun SshGuidedForm(
                 placeholder = "proxy.example.net:8080"
             )
             Text(
-                "Use host:port. Add userpass@ before the host when the proxy requires authentication.",
+                "Use host:port. Proxy credentials in the address are not sent; if the proxy needs a login, add a Proxy-Authorization header to the payload.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

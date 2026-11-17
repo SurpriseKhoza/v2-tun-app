@@ -160,7 +160,9 @@ object ShareLinkParser {
             sshTlsEnabled = query["tls"] == "1",
             sshPayload = decode(query["payloadText"].orEmpty()),
             sshRemoteProxy = decode(query["proxy"].orEmpty()),
-            sni = decode(query["sni"].orEmpty())
+            sni = decode(query["sni"].orEmpty()),
+            sshUdpGwPort = query["udpgw"]?.toIntOrNull()?.coerceIn(1, 65535) ?: 7300,
+            sshTcpFastOpen = query["tfo"] == "1"
         )
     }
 
@@ -191,6 +193,8 @@ object ShareLinkParser {
             },
             sshRemoteProxy = proxy,
             sshUdpGwPort = udpGwPort,
+            sshTcpFastOpen = source.optBoolean("tcpFastOpen", source.optBoolean("sshTcpFastOpen", false)),
+            sshPrivateKey = firstString(source, "privateKey", "sshPrivateKey"),
             sni = firstString(source, "sni", "serverName", "frontDomain")
         )
     }
@@ -201,6 +205,11 @@ object ShareLinkParser {
             .firstOrNull { it.isNotBlank() }
             .orEmpty()
 
+    /**
+     * Share links intentionally omit the SSH private key: links get pasted into chats and
+     * notes, and a private key must not travel that way. Password, UDPGW port and TCP Fast
+     * Open are included so a round trip does not silently reset them.
+     */
     private fun buildSsh(profile: VpnProfile): String {
         val query = linkedMapOf<String, String>()
         if (profile.sshPayloadEnabled) query["payload"] = "1"
@@ -208,6 +217,8 @@ object ShareLinkParser {
         profile.sshPayload.takeIf { it.isNotBlank() }?.let { query["payloadText"] = it }
         profile.sshRemoteProxy.takeIf { it.isNotBlank() }?.let { query["proxy"] = it }
         profile.sni.takeIf { it.isNotBlank() }?.let { query["sni"] = it }
+        if (profile.sshUdpGwPort != 7300) query["udpgw"] = profile.sshUdpGwPort.toString()
+        if (profile.sshTcpFastOpen) query["tfo"] = "1"
         val suffix = queryString(query).takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()
         return "ssh://${encode(profile.host)}:${encode(profile.secret)}@${formatHost(profile.server)}:${profile.port}$suffix#${encode(profile.name)}"
     }
