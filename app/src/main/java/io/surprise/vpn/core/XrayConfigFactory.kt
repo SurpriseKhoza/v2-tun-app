@@ -34,6 +34,12 @@ object XrayConfigFactory {
     private const val DIRECT_TAG = "direct"
     private const val BLOCK_TAG = "block"
 
+    /** Placeholder diagnostic SOCKS inbound port used in previews and validation. */
+    private const val PREVIEW_SOCKS_PORT = 10808
+
+    /** Placeholder SSH bridge port used in previews and validation. Distinct from the inbound. */
+    private const val PREVIEW_BRIDGE_PORT = 10809
+
     private val privateCidrs = listOf(
         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8",
         "169.254.0.0/16", "224.0.0.0/4", "255.255.255.255/32",
@@ -68,10 +74,13 @@ object XrayConfigFactory {
     }
 
     fun preview(profile: VpnProfile, settings: AppSettings): String {
+        // SSH profiles get a placeholder bridge port that differs from the inbound, so the
+        // preview never shows (or seeds the JSON editor with) a self-looping SOCKS outbound.
+        val bridge = if (profile.protocol == VpnProtocol.SSH) PREVIEW_BRIDGE_PORT else null
         val root = if (profile.jsonConfig.isNullOrBlank()) {
-            guidedRoot(profile, settings, 7, 10808, "preview-token", null, null, null, emptyList())
+            guidedRoot(profile, settings, 7, PREVIEW_SOCKS_PORT, "preview-token", null, bridge, null, emptyList())
         } else {
-            customRoot(profile.jsonConfig, settings, 7, 10808, "preview-token", null, emptyList(), null)
+            customRoot(profile.jsonConfig, settings, 7, PREVIEW_SOCKS_PORT, "preview-token", null, emptyList(), bridge)
         }
         return root.toString(2)
     }
@@ -80,6 +89,11 @@ object XrayConfigFactory {
         val errors = mutableListOf<String>()
         val warnings = mutableListOf<String>()
         if (profile.name.isBlank()) errors += "Give this configuration a name."
+        if (profile.sshRemoteProxy.contains('@') &&
+            (profile.protocol == VpnProtocol.SSH || (!profile.isJsonBacked && profile.sshPayloadEnabled))
+        ) {
+            errors += "Proxy credentials (user:pass@host) are not sent. Remove them and add a Proxy-Authorization header to the payload instead."
+        }
         if (!profile.isJsonBacked) {
             if (profile.server.isBlank()) errors += "Server address is required."
             if (profile.port !in 1..65535) errors += "Port must be between 1 and 65535."
@@ -117,7 +131,15 @@ object XrayConfigFactory {
             if (profile.allowInsecure) warnings += "Certificate verification is disabled for this server."
         }
         try {
-            val built = build(profile, settings, 7, null)
+            // SSH profiles get a placeholder bridge here, exactly like at runtime, so a custom
+            // JSON that copied the preview's loopback SOCKS port validates correctly.
+            val built = build(
+                profile,
+                settings,
+                7,
+                null,
+                proxyPortOverride = if (profile.protocol == VpnProtocol.SSH) PREVIEW_BRIDGE_PORT else null
+            )
             val root = JSONObject(built.json)
             val outbounds = root.optJSONArray("outbounds")
             if (outbounds == null || outbounds.length() == 0) errors += "The configuration has no outbound server."
@@ -214,7 +236,7 @@ object XrayConfigFactory {
         val proxyTag = firstTag ?: throw IllegalArgumentException(
             "The JSON configuration needs at least one proxy outbound (VLESS, VMess, Trojan, or Shadowsocks)."
         )
-        rewriteLoopbackSocksOutbound(outbounds, socksPort, proxyPortOverride)
+        rewriteLoopbackSocksOutbound(outbounds, socksPort, proxyPortOverride, proxyTag)
 
         if (!root.has("log")) root.put("log", logObject(settings, logDirectory))
         if (!root.has("dns")) root.put("dns", dnsObject(settings, dnsServersOverride))
@@ -421,20 +443,29 @@ object XrayConfigFactory {
     }
 
     /**
-     * Custom JSON is commonly copied from a preview where both the SOCKS
-     * inbound and outbound use 10808. That creates a local routing loop. When
-     * the native SSH bridge has already started, replace only that loopback
-     * endpoint with its dynamically allocated port. For non-SSH JSON profiles,
-     * fail early with an actionable error instead of starting a broken VPN.
+     * Custom JSON is commonly copied from a preview where the SOCKS outbound points at a
+     * placeholder loopback port (10808 / 10809), or at the per-run diagnostic inbound port.
+     * Both are routing loops or dead ends.
+     *
+     * - With a running SSH bridge ([bridgePort] != null), the primary proxy outbound and any
+     *   loopback SOCKS outbound using one of those placeholder ports is pointed at the bridge.
+     *   Other loopback SOCKS outbounds (for example a deliberate chain to another local proxy)
+     *   are left alone.
+     * - Without a bridge (non-SSH JSON), a loopback SOCKS outbound on one of those ports has
+     *   nothing listening behind it, so fail early with an actionable error instead of starting
+     *   a VPN that silently carries no traffic.
      */
     private fun rewriteLoopbackSocksOutbound(
         outbounds: JSONArray,
         localSocksPort: Int,
-        bridgePort: Int?
+        bridgePort: Int?,
+        proxyTag: String
     ) {
+        val placeholderPorts = setOf(PREVIEW_SOCKS_PORT, PREVIEW_BRIDGE_PORT, localSocksPort)
         for (i in 0 until outbounds.length()) {
             val outbound = outbounds.optJSONObject(i) ?: continue
             if (outbound.optString("protocol") != "socks") continue
+            val primary = outbound.optString("tag") == proxyTag
             val servers = outbound.optJSONObject("settings")?.optJSONArray("servers") ?: continue
             for (j in 0 until servers.length()) {
                 val server = servers.optJSONObject(j) ?: continue
@@ -442,19 +473,18 @@ object XrayConfigFactory {
                 val port = server.optInt("port", -1)
                 val loopback = address == "127.0.0.1" || address == "localhost" || address == "::1"
                 if (!loopback) continue
-                // An SSH-backed custom profile may contain a preview port such
-                // as 10808 rather than the newly allocated diagnostic port.
-                // Once the native bridge exists, every loopback SOCKS target
-                // in that profile must point to the bridge.
+                val placeholder = port in placeholderPorts
                 if (bridgePort != null) {
-                    server.put("address", "127.0.0.1")
-                    server.put("port", bridgePort)
+                    if (primary || placeholder) {
+                        server.put("address", "127.0.0.1")
+                        server.put("port", bridgePort)
+                    }
                     continue
                 }
-                if (port != localSocksPort) continue
+                if (!placeholder) continue
                 throw IllegalArgumentException(
-                    "SOCKS outbound points to the V2-TUN inbound port $localSocksPort; " +
-                        "use a guided SSH profile or provide a running upstream bridge."
+                    "SOCKS outbound points to 127.0.0.1:$port, which is a V2-TUN placeholder port with " +
+                        "nothing listening behind it. Use a guided SSH profile or point it at a running upstream proxy."
                 )
             }
         }

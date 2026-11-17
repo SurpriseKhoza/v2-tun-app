@@ -9,6 +9,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -187,6 +188,77 @@ class XrayConfigFactoryTest {
             .getJSONObject("settings").getJSONArray("servers").getJSONObject(0)
         assertEquals("127.0.0.1", server.getString("address"))
         assertEquals(43123, server.getInt("port"))
+    }
+
+    @Test
+    fun keepsUnrelatedLoopbackSocksOutboundInSshJson() {
+        val raw = """
+            {
+              "outbounds": [
+                {"tag": "proxy", "protocol": "socks",
+                 "settings": {"servers": [{"address": "127.0.0.1", "port": 10808}]}},
+                {"tag": "tor", "protocol": "socks",
+                 "settings": {"servers": [{"address": "127.0.0.1", "port": 9050}]}}
+              ]
+            }
+        """.trimIndent()
+        val profile = sshProfile().copy(jsonConfig = raw)
+        val root = JSONObject(XrayConfigFactory.build(profile, AppSettings(), 7, proxyPortOverride = 43123).json)
+        val outbounds = root.getJSONArray("outbounds")
+        fun portOf(index: Int) = outbounds.getJSONObject(index).getJSONObject("settings")
+            .getJSONArray("servers").getJSONObject(0).getInt("port")
+        assertEquals(43123, portOf(0))
+        assertEquals(9050, portOf(1))
+    }
+
+    @Test
+    fun failsEarlyWhenNonSshJsonPointsAtPlaceholderLoopbackPort() {
+        val raw = """
+            {
+              "outbounds": [{
+                "tag": "proxy",
+                "protocol": "socks",
+                "settings": {"servers": [{"address": "127.0.0.1", "port": 10808}]}
+              }]
+            }
+        """.trimIndent()
+        val profile = vlessProfile().copy(jsonConfig = raw)
+        assertThrows(IllegalArgumentException::class.java) {
+            XrayConfigFactory.build(profile, AppSettings(), 7)
+        }
+        assertFalse(XrayConfigFactory.validate(profile, AppSettings()).isValid)
+    }
+
+    @Test
+    fun validatesSshJsonThatCopiedPreviewLoopbackPort() {
+        val raw = """
+            {
+              "outbounds": [{
+                "tag": "proxy",
+                "protocol": "socks",
+                "settings": {"servers": [{"address": "127.0.0.1", "port": 10808}]}
+              }]
+            }
+        """.trimIndent()
+        val result = XrayConfigFactory.validate(sshProfile().copy(jsonConfig = raw), AppSettings())
+        assertTrue(result.errors.toString(), result.isValid)
+    }
+
+    @Test
+    fun sshPreviewDoesNotLoopBackToItsOwnInbound() {
+        val root = JSONObject(XrayConfigFactory.preview(sshProfile(), AppSettings()))
+        val outboundPort = root.getJSONArray("outbounds").getJSONObject(0)
+            .getJSONObject("settings").getJSONArray("servers").getJSONObject(0).getInt("port")
+        val inboundPort = root.getJSONArray("inbounds").getJSONObject(1).getInt("port")
+        assertTrue(outboundPort != inboundPort)
+    }
+
+    @Test
+    fun rejectsProxyCredentialsThatAreNotSent() {
+        val profile = sshProfile().copy(sshRemoteProxy = "user:pw@proxy.example:8080")
+        val result = XrayConfigFactory.validate(profile, AppSettings())
+        assertFalse(result.isValid)
+        assertTrue(result.errors.any { it.contains("credentials", ignoreCase = true) })
     }
 
     @Test
