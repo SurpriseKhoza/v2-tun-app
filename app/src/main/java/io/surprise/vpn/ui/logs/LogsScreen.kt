@@ -18,8 +18,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Terminal
@@ -37,38 +37,40 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.surprise.vpn.MainViewModel
 import io.surprise.vpn.core.LogSource
+import io.surprise.vpn.core.TunnelLogs
+import io.surprise.vpn.ui.components.ConfirmDialog
 import io.surprise.vpn.ui.components.SmallActionChip
-import io.surprise.vpn.ui.components.TopIconButton
 import io.surprise.vpn.ui.theme.Danger
 import io.surprise.vpn.ui.theme.JsonTextStyle
 import io.surprise.vpn.ui.theme.Violet
 import io.surprise.vpn.ui.theme.Warning
 
+/**
+ * Logs is a bottom-bar tab, so it has no back arrow. The header, filters and actions stay on
+ * screen even when the current filter matches nothing (the old version swapped the whole
+ * screen for an empty state, which also hid the filter chips).
+ */
 @Composable
 fun LogsScreen(
     viewModel: MainViewModel,
-    onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val logs by viewModel.logs.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
     var source by remember { mutableStateOf<LogSource?>(null) }
-    val visible = logs.filter { source == null || it.source == source }.reversed()
-
-    if (visible.isEmpty()) {
-        EmptyLogsReference(
-            modifier = modifier,
-            onClear = {
-                viewModel.clearDiagnostics()
-                io.surprise.vpn.core.TunnelLogs.clear()
-            }
-        )
-        return
+    var confirmClear by remember { mutableStateOf(false) }
+    // Keep each entry's position in the full log so list keys are always unique, even when
+    // identical lines are written in the same millisecond.
+    val visible = remember(logs, source) {
+        logs.withIndex()
+            .filter { source == null || it.value.source == source }
+            .reversed()
     }
 
     Column(
@@ -80,27 +82,30 @@ fun LogsScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TopIconButton(
-                icon = Icons.Rounded.ArrowBack,
-                contentDescription = "Back",
-                onClick = onBack
-            )
-            Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text("SESSION LOGS", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 Text("Tunnel logs", style = MaterialTheme.typography.titleLarge)
             }
-            IconButton(onClick = {
-                clipboard.setText(AnnotatedString(logs.joinToString("\n") { "${it.time} [${it.source}] ${it.message}" }))
-                viewModel.notify("Logs copied")
-            }) {
-                Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy logs", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            IconButton(
+                enabled = visible.isNotEmpty(),
+                onClick = {
+                    // Copy exactly what is on screen, oldest first.
+                    clipboard.setText(
+                        AnnotatedString(
+                            visible.asReversed().joinToString("\n") {
+                                "${it.value.time} [${it.value.source}] ${it.value.message}"
+                            }
+                        )
+                    )
+                    viewModel.notify("Copied ${visible.size} entries. Logs can include server addresses, so review them before sharing.")
+                }
+            ) {
+                Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy shown logs", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            IconButton(onClick = {
-                viewModel.clearDiagnostics()
-                // TunnelLogs is intentionally cleared through the same public surface as the screen.
-                io.surprise.vpn.core.TunnelLogs.clear()
-            }) {
+            IconButton(
+                enabled = logs.isNotEmpty(),
+                onClick = { confirmClear = true }
+            ) {
                 Icon(Icons.Rounded.DeleteOutline, contentDescription = "Clear logs", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -113,7 +118,7 @@ fun LogsScreen(
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "Newest first · ${logs.size} entries captured this session",
+            "Newest first · ${visible.size} shown of ${logs.size} captured this session",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -137,98 +142,92 @@ fun LogsScreen(
                         Icon(Icons.Rounded.Terminal, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
                     }
                     Spacer(Modifier.height(12.dp))
-                    Text("No log entries yet", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Connect a tunnel to populate the session log.",
+                        if (logs.isEmpty()) "No log entries yet" else "No entries for this filter",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        if (logs.isEmpty()) {
+                            "Connect a tunnel to populate the session log."
+                        } else {
+                            "Pick “All” to see every entry."
+                        },
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
                     )
                 }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(bottom = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(visible, key = { "${it.timestamp}-${it.source}-${it.message.hashCode()}" }) { entry ->
-                    val levelColor = when {
-                        entry.level.contains("ERROR", ignoreCase = true) -> Danger
-                        entry.level.contains("WARN", ignoreCase = true) -> Warning
-                        entry.source == LogSource.CORE -> Violet
-                        else -> MaterialTheme.colorScheme.primary
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.75f))
-                            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(14.dp))
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                entry.time,
-                                style = JsonTextStyle.copy(fontSize = 10.sp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Box(
-                                Modifier
-                                    .size(5.dp)
-                                    .clip(CircleShape)
-                                    .background(levelColor)
-                            )
+            // Selectable so a single line can be copied without exporting everything.
+            SelectionContainer(modifier = Modifier.weight(1f)) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(visible, key = { "${it.value.timestamp}-${it.index}" }) { indexed ->
+                        val entry = indexed.value
+                        val levelColor = when {
+                            entry.level.contains("ERROR", ignoreCase = true) -> Danger
+                            entry.level.contains("WARN", ignoreCase = true) -> Warning
+                            entry.source == LogSource.CORE -> Violet
+                            else -> MaterialTheme.colorScheme.primary
                         }
-                        Spacer(Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "${entry.source.name} · ${entry.level}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = levelColor
-                            )
-                            Spacer(Modifier.height(3.dp))
-                            Text(
-                                entry.message,
-                                style = JsonTextStyle.copy(color = MaterialTheme.colorScheme.onSurface),
-                            )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.75f))
+                                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(14.dp))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    entry.time,
+                                    style = JsonTextStyle.copy(fontSize = 10.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Box(
+                                    Modifier
+                                        .size(5.dp)
+                                        .clip(CircleShape)
+                                        .background(levelColor)
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "${entry.source.name} · ${entry.level}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = levelColor
+                                )
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    entry.message,
+                                    style = JsonTextStyle.copy(color = MaterialTheme.colorScheme.onSurface)
+                                )
+                            }
                         }
                     }
                 }
             }
         }
     }
-}
 
-@Composable
-private fun EmptyLogsReference(modifier: Modifier, onClear: () -> Unit) {
-    Box(modifier = modifier.fillMaxSize()) {
-        IconButton(
-            onClick = onClear,
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 10.dp)
-        ) {
-            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Clear logs", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.Center)
-                .padding(horizontal = 30.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Icon(Icons.Rounded.Terminal, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(68.dp))
-            Spacer(Modifier.height(22.dp))
-            Text("[  NO LOGS  ]", style = MaterialTheme.typography.titleMedium.copy(letterSpacing = 2.sp))
-            Spacer(Modifier.height(10.dp))
-            Text("No logs available.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Connect the VPN to generate connection and diagnostic logs.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-            )
-        }
+    if (confirmClear) {
+        ConfirmDialog(
+            title = "Clear logs?",
+            text = "All ${logs.size} entries captured this session will be removed.",
+            confirmLabel = "Clear",
+            destructive = true,
+            onConfirm = {
+                viewModel.clearDiagnostics()
+                TunnelLogs.clear()
+            },
+            onDismiss = { confirmClear = false }
+        )
     }
 }

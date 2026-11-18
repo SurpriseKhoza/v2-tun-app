@@ -22,11 +22,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ContentPaste
@@ -55,7 +56,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -92,6 +96,7 @@ fun ConfigsScreen(
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf<VpnProtocol?>(null) }
     var deleteTarget by remember { mutableStateOf<VpnProfile?>(null) }
+    var shareTarget by remember { mutableStateOf<VpnProfile?>(null) }
 
     val fileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -113,6 +118,20 @@ fun ConfigsScreen(
             viewModel.notify("Clipboard is empty. Copy a share link or Xray JSON first.", isError = true)
         } else {
             viewModel.importText(text)
+        }
+    }
+
+    fun shareProfile(profile: VpnProfile) {
+        runCatching {
+            val text = ShareLinkParser.toShareLink(profile)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, profile.name)
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            context.startActivity(Intent.createChooser(intent, "Share ${profile.name}"))
+        }.onFailure {
+            viewModel.notify("This configuration could not be shared.", isError = true)
         }
     }
 
@@ -211,14 +230,7 @@ fun ConfigsScreen(
             }
         }
 
-        if (profiles.isEmpty()) {
-            item {
-                EmptyVault(
-                    onCreate = onAdd,
-                    onPaste = ::importClipboard
-                )
-            }
-        } else if (visible.isEmpty()) {
+        if (visible.isEmpty()) {
             item {
                 GlassCard(
                     shape = RoundedCornerShape(24.dp),
@@ -250,19 +262,7 @@ fun ConfigsScreen(
                     onPing = { viewModel.pingProfile(profile) },
                     onEdit = { onEdit(profile.id) },
                     onDuplicate = { viewModel.duplicateProfile(profile.id) },
-                    onShare = {
-                        runCatching {
-                            val text = ShareLinkParser.toShareLink(profile)
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_SUBJECT, profile.name)
-                                putExtra(Intent.EXTRA_TEXT, text)
-                            }
-                            context.startActivity(Intent.createChooser(intent, "Share ${profile.name}"))
-                        }.onFailure {
-                            viewModel.notify("This configuration could not be shared.", isError = true)
-                        }
-                    },
+                    onShare = { shareTarget = profile },
                     onDelete = { deleteTarget = profile }
                 )
             }
@@ -275,13 +275,20 @@ fun ConfigsScreen(
             text = "“${target.name}” will be removed from this device. This cannot be undone.",
             confirmLabel = "Delete",
             destructive = true,
-            onConfirm = {
-                if (tunnel.status == ConnectionStatus.CONNECTED && tunnel.profileId == target.id) {
-                    viewModel.stopTunnel()
-                }
-                viewModel.deleteProfile(target.id)
-            },
+            // The view model stops the tunnel if this profile is the one in use.
+            onConfirm = { viewModel.deleteProfile(target.id) },
             onDismiss = { deleteTarget = null }
+        )
+    }
+
+    shareTarget?.let { target ->
+        ConfirmDialog(
+            title = "Share this configuration?",
+            text = "The link includes the credentials for “${target.name}” (password, UUID or key). " +
+                "Anyone who gets it can use your server, so only send it to people you trust.",
+            confirmLabel = "Share",
+            onConfirm = { shareProfile(target) },
+            onDismiss = { shareTarget = null }
         )
     }
 }
@@ -308,21 +315,21 @@ private fun EmptyConfigsReference(
                 "It looks like you have not set up any configurations yet.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(8.dp))
             Text(
                 "Create a profile, paste a share link, or import a JSON configuration.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(22.dp))
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable(onClick = onCreate)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .clickable(role = Role.Button, onClick = onCreate)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(Icons.Rounded.Add, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(25.dp))
@@ -333,7 +340,10 @@ private fun EmptyConfigsReference(
                 "Paste link / JSON",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.clickable(onClick = onPaste).padding(8.dp)
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(role = Role.Button, onClick = onPaste)
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
             )
         }
     }
@@ -355,7 +365,7 @@ private fun ConfigFilterChip(
                 if (selected) scheme.primary.copy(alpha = 0.45f) else scheme.outline.copy(alpha = 0.45f),
                 RoundedCornerShape(50)
             )
-            .clickable(onClick = onClick)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
             .padding(horizontal = 13.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -392,9 +402,10 @@ private fun ConfigCard(
         onClick = onSelect,
         modifier = Modifier
             .fillMaxWidth()
+            .semantics { this.selected = selected }
             .border(
-                1.dp,
-                if (selected) scheme.primary.copy(alpha = 0.55f) else androidx.compose.ui.graphics.Color.Transparent,
+                if (selected) 1.5.dp else 1.dp,
+                if (selected) scheme.primary.copy(alpha = 0.7f) else androidx.compose.ui.graphics.Color.Transparent,
                 RoundedCornerShape(24.dp)
             )
     ) {
@@ -432,11 +443,12 @@ private fun ConfigCard(
                     )
                     if (selected) {
                         Spacer(Modifier.width(6.dp))
-                        Box(
-                            Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(scheme.primary)
+                        // Clearer than a 6dp dot; also announced through the selected state.
+                        Icon(
+                            Icons.Rounded.CheckCircle,
+                            contentDescription = "Selected",
+                            tint = scheme.primary,
+                            modifier = Modifier.size(17.dp)
                         )
                     }
                     if (connected) {
@@ -532,59 +544,6 @@ private fun ConfigCard(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun EmptyVault(
-    onCreate: () -> Unit,
-    onPaste: () -> Unit
-) {
-    GlassCard(
-        shape = RoundedCornerShape(28.dp),
-        contentPadding = PaddingValues(horizontal = 22.dp, vertical = 28.dp)
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(66.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Rounded.Dns,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(29.dp)
-                )
-            }
-            Spacer(Modifier.height(16.dp))
-            Text("Bring your own server", style = MaterialTheme.typography.headlineSmall)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Build a configuration with the guided form, paste a share link, or import a full Xray JSON file.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-            )
-            Spacer(Modifier.height(18.dp))
-            GradientButton(
-                text = "Create configuration",
-                onClick = onCreate,
-                icon = Icons.Rounded.Add
-            )
-            Spacer(Modifier.height(9.dp))
-            OutlineButton(
-                text = "Paste link or JSON",
-                onClick = onPaste,
-                icon = Icons.Rounded.ContentPaste,
-                fillWidth = true
-            )
         }
     }
 }
