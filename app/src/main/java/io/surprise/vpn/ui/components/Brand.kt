@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -229,6 +230,9 @@ fun ConnectionOrb(
     val scheme = MaterialTheme.colorScheme
     val active = status == ConnectionStatus.CONNECTED
     val busy = status == ConnectionStatus.CONNECTING || status == ConnectionStatus.DISCONNECTING
+    // A tunnel that is still connecting can be cancelled; only a tunnel that is already
+    // closing ignores taps.
+    val tappable = status != ConnectionStatus.DISCONNECTING
     val transition = rememberInfiniteTransition(label = "orb")
     val rotation by transition.animateFloat(
         initialValue = 0f,
@@ -347,7 +351,8 @@ fun ConnectionOrb(
                     CircleShape
                 )
                 .clickable(
-                    enabled = !busy,
+                    enabled = tappable,
+                    role = Role.Button,
                     interactionSource = interaction,
                     indication = null,
                     onClick = onClick
@@ -359,6 +364,8 @@ fun ConnectionOrb(
                     Icons.Rounded.PowerSettingsNew,
                     contentDescription = when {
                         active -> "Disconnect VPN"
+                        status == ConnectionStatus.CONNECTING -> "Cancel connection"
+                        status == ConnectionStatus.DISCONNECTING -> "Disconnecting"
                         hasProfile -> "Connect VPN"
                         else -> "Add a configuration"
                     },
@@ -368,7 +375,7 @@ fun ConnectionOrb(
                 Spacer(Modifier.height(8.dp))
                 Text(
                     when {
-                        status == ConnectionStatus.CONNECTING -> "CONNECTING"
+                        status == ConnectionStatus.CONNECTING -> "TAP TO CANCEL"
                         status == ConnectionStatus.DISCONNECTING -> "CLOSING"
                         active -> "TAP TO DISCONNECT"
                         !hasProfile -> "SET UP A SERVER"
