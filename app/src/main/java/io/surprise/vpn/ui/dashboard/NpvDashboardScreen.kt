@@ -1,14 +1,11 @@
 package io.surprise.vpn.ui.dashboard
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,9 +21,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowForwardIos
 import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -39,12 +39,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.surprise.vpn.BuildConfig
 import io.surprise.vpn.MainViewModel
 import io.surprise.vpn.core.TunnelSnapshot
 import io.surprise.vpn.data.model.ConnectionStatus
@@ -77,10 +81,11 @@ fun NpvDashboardScreen(
         }
     }
     val connected = tunnel.status == ConnectionStatus.CONNECTED
-    val busy = tunnel.status == ConnectionStatus.CONNECTING || tunnel.status == ConnectionStatus.DISCONNECTING
     val orbClick = {
         when {
-            busy -> Unit
+            // A connect that is still in progress can be cancelled.
+            tunnel.status == ConnectionStatus.CONNECTING -> onDisconnectRequested()
+            tunnel.status == ConnectionStatus.DISCONNECTING -> Unit
             connected -> onDisconnectRequested()
             selected != null -> onConnectRequested()
             else -> onOpenEditor(null)
@@ -116,7 +121,7 @@ fun NpvDashboardScreen(
                     color = Aqua
                 )
                 Text(
-                    "v1.0 · Xray / SSH",
+                    "v${BuildConfig.VERSION_NAME} · Xray / SSH",
                     style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -141,6 +146,7 @@ fun NpvDashboardScreen(
         Spacer(Modifier.height(12.dp))
         RouteStrip(
             connected = connected,
+            hasProfile = selected != null,
             onClick = if (selected == null) ({ onOpenEditor(null) }) else onOpenConfigs
         )
         Spacer(Modifier.height(16.dp))
@@ -172,42 +178,57 @@ private fun StatusPanel(
     }
     val detail = when {
         connected -> "Your traffic is routed through $profileName."
+        status == ConnectionStatus.CONNECTING -> "Tap the power button to cancel."
         status == ConnectionStatus.ERROR -> error ?: "Check the configuration and try again."
         selected == null -> "Choose a configuration, then tap the power button to connect."
         else -> "Tap the power button to start the selected tunnel."
     }
+    val scheme = MaterialTheme.colorScheme
+    val icon = when (status) {
+        ConnectionStatus.CONNECTED -> Icons.Rounded.CloudDone
+        ConnectionStatus.ERROR -> Icons.Rounded.ErrorOutline
+        ConnectionStatus.CONNECTING, ConnectionStatus.DISCONNECTING -> Icons.Rounded.Sync
+        ConnectionStatus.STOPPED -> Icons.Rounded.CloudOff
+    }
+    val iconTint = when (status) {
+        ConnectionStatus.CONNECTED -> Aqua
+        ConnectionStatus.ERROR -> scheme.error
+        else -> scheme.onSurfaceVariant
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // Announce status changes to screen readers.
+            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }
             .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
+            .background(scheme.surface.copy(alpha = 0.9f))
+            .border(1.dp, scheme.outline.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
             .padding(horizontal = 16.dp, vertical = 15.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            Icons.Rounded.CloudOff,
+            icon,
             contentDescription = null,
-            tint = if (connected) Aqua else MaterialTheme.colorScheme.onSurfaceVariant,
+            tint = iconTint,
             modifier = Modifier.size(34.dp)
         )
         Spacer(Modifier.width(15.dp))
         Column {
             Text(title, style = MaterialTheme.typography.titleSmall.copy(letterSpacing = 1.2.sp))
             Spacer(Modifier.height(4.dp))
-            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
         }
     }
 }
 
 @Composable
-private fun RouteStrip(connected: Boolean, onClick: () -> Unit) {
+private fun RouteStrip(connected: Boolean, hasProfile: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(5.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f))
-            .clickable(onClick = onClick)
+            .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 15.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -218,7 +239,14 @@ private fun RouteStrip(connected: Boolean, onClick: () -> Unit) {
                 .background(if (connected) Aqua else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
         )
         Spacer(Modifier.width(10.dp))
-        Text(if (connected) "Secure route active" else "Select a configuration", style = MaterialTheme.typography.bodySmall)
+        Text(
+            when {
+                connected -> "Secure route active"
+                hasProfile -> "Ready · tap to change configuration"
+                else -> "Select a configuration"
+            },
+            style = MaterialTheme.typography.bodySmall
+        )
         Spacer(Modifier.weight(1f))
         Icon(Icons.Rounded.ArrowForwardIos, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
     }
@@ -238,7 +266,7 @@ private fun ActiveConfigurationPanel(
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
+            .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 20.dp)
     ) {
         Text("ACTIVE CONFIGURATION", style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -247,8 +275,19 @@ private fun ActiveConfigurationPanel(
             Icon(Icons.Rounded.Dns, null, tint = Aqua, modifier = Modifier.size(30.dp))
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
-                Text(profile?.name ?: "Not Set", style = MaterialTheme.typography.titleMedium, maxLines = 1)
-                Text(profile?.endpoint ?: "---", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    profile?.name ?: "Not Set",
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    profile?.endpoint ?: "---",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
             Icon(Icons.Rounded.ArrowForwardIos, null, tint = Aqua, modifier = Modifier.size(18.dp))
         }
