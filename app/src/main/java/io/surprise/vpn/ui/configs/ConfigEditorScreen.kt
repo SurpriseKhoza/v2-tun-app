@@ -1,5 +1,6 @@
 package io.surprise.vpn.ui.configs
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
@@ -9,6 +10,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -53,6 +56,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -66,19 +70,67 @@ import io.surprise.vpn.data.model.Security
 import io.surprise.vpn.data.model.Transport
 import io.surprise.vpn.data.model.VpnProfile
 import io.surprise.vpn.data.model.VpnProtocol
+import io.surprise.vpn.ui.components.ConfirmDialog
 import io.surprise.vpn.ui.components.GlassCard
 import io.surprise.vpn.ui.components.GradientButton
 import io.surprise.vpn.ui.components.JsonEditor
-import io.surprise.vpn.ui.components.SectionHeader
 import io.surprise.vpn.ui.components.SmallActionChip
-import io.surprise.vpn.ui.components.TopIconButton
 import io.surprise.vpn.ui.components.V2Dropdown
 import io.surprise.vpn.ui.components.V2SegmentedControl
 import io.surprise.vpn.ui.components.V2SliderRow
 import io.surprise.vpn.ui.components.V2SwitchRow
 import io.surprise.vpn.ui.components.V2TextField
 import io.surprise.vpn.ui.theme.JsonTextStyle
+import kotlinx.coroutines.delay
 import org.json.JSONObject
+
+// Identifiers, hosts, keys and payloads must never be auto-capitalized or auto-corrected.
+private val PlainText = KeyboardOptions(
+    capitalization = KeyboardCapitalization.None,
+    autoCorrectEnabled = false
+)
+private val PlainUri = KeyboardOptions(
+    capitalization = KeyboardCapitalization.None,
+    autoCorrectEnabled = false,
+    keyboardType = KeyboardType.Uri
+)
+private val SecretText = KeyboardOptions(
+    capitalization = KeyboardCapitalization.None,
+    autoCorrectEnabled = false,
+    keyboardType = KeyboardType.Password
+)
+private val NumberOnly = KeyboardOptions(keyboardType = KeyboardType.Number)
+
+private fun List<String>.has(vararg words: String): Boolean =
+    any { error -> words.any { error.contains(it, ignoreCase = true) } }
+
+/**
+ * Changes protocol while keeping the form coherent. Username/host and password/UUID mean
+ * different things for SSH and Xray protocols, so they are cleared when crossing that line
+ * instead of silently leaking an SSH password into a UUID field (or the reverse).
+ */
+private fun switchProtocol(draft: VpnProfile, protocol: VpnProtocol): VpnProfile {
+    if (protocol == draft.protocol) return draft
+    var next = draft.copy(protocol = protocol)
+    val crossing = (protocol == VpnProtocol.SSH) != (draft.protocol == VpnProtocol.SSH)
+    if (crossing) {
+        next = next.copy(secret = "", host = "", sshPrivateKey = "")
+        val oldDefault = if (draft.protocol == VpnProtocol.SSH) 22 else 443
+        val newDefault = if (protocol == VpnProtocol.SSH) 22 else 443
+        if (draft.port == oldDefault) next = next.copy(port = newDefault)
+    }
+    if (protocol != VpnProtocol.SSH) {
+        next = next.copy(
+            security = when (protocol) {
+                VpnProtocol.SHADOWSOCKS -> Security.NONE
+                else -> if (next.security == Security.NONE) Security.TLS else next.security
+            },
+            transport = if (protocol == VpnProtocol.SHADOWSOCKS) Transport.TCP else next.transport,
+            flow = if (protocol == VpnProtocol.VLESS) next.flow else ""
+        )
+    }
+    return next
+}
 
 @Composable
 fun ConfigEditorScreen(
@@ -88,9 +140,11 @@ fun ConfigEditorScreen(
     modifier: Modifier = Modifier
 ) {
     val existing = remember(profileId) { profileId?.let(viewModel::profile) }
+    val initial = remember(profileId) { existing ?: VpnProfile() }
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
-    var draft by remember(profileId) { mutableStateOf(existing ?: VpnProfile()) }
+    val scrollState = rememberScrollState()
+    var draft by remember(profileId) { mutableStateOf(initial) }
     var mode by remember(profileId) { mutableIntStateOf(if (existing?.isJsonBacked == true) 1 else 0) }
     var jsonText by remember(profileId) { mutableStateOf(existing?.jsonConfig.orEmpty()) }
     var jsonError by remember { mutableStateOf<String?>(null) }
@@ -100,9 +154,29 @@ fun ConfigEditorScreen(
     var showPreview by remember { mutableStateOf(false) }
     var jsonDirty by remember { mutableStateOf(existing?.isJsonBacked == true) }
     var guidedTouched by remember { mutableStateOf(false) }
+    var showDiscard by remember { mutableStateOf(false) }
+    var pendingGuided by remember { mutableStateOf(false) }
+    var errorTick by remember { mutableIntStateOf(0) }
+
+    val initialJson = existing?.jsonConfig.orEmpty().trim()
+    val hasChanges = draft != initial || (jsonDirty && jsonText.trim() != initialJson)
 
     val generatedJson = remember(draft, settings) {
         runCatching { XrayConfigFactory.preview(draft, settings) }.getOrDefault("")
+    }
+
+    BackHandler(enabled = hasChanges) { showDiscard = true }
+
+    // Errors render at the top of the form; bring them into view after a failed save/validate.
+    LaunchedEffect(errorTick) {
+        if (errorTick > 0) scrollState.animateScrollTo(0)
+    }
+    // Confirmation toasts float over the content, so auto-dismiss them.
+    LaunchedEffect(feedback) {
+        if (feedback != null) {
+            delay(3_000)
+            feedback = null
+        }
     }
 
     LaunchedEffect(mode) {
@@ -147,6 +221,35 @@ fun ConfigEditorScreen(
         )
     }
 
+    fun applyModeSwitch(next: Int) {
+        if (next == 1) {
+            if (jsonText.isBlank() || guidedTouched) {
+                jsonText = generatedJson
+                jsonDirty = false
+                guidedTouched = false
+            }
+            mode = 1
+        } else {
+            if (jsonText.isNotBlank()) {
+                ShareLinkParser.parseJsonConfig(jsonText)?.let { mergeParsed(it) }
+            }
+            mode = 0
+        }
+        jsonError = null
+        formErrors = emptyList()
+    }
+
+    // One entry point for the segmented control and the header button, so both regenerate the
+    // JSON and both warn before hand-written JSON would be replaced by the guided form.
+    fun switchMode(next: Int) {
+        if (next == mode) return
+        if (next == 0 && jsonDirty && jsonText.isNotBlank()) {
+            pendingGuided = true
+            return
+        }
+        applyModeSwitch(next)
+    }
+
     fun pasteFromClipboard() {
         val text = clipboard.getText()?.text
         if (text.isNullOrBlank()) {
@@ -185,6 +288,7 @@ fun ConfigEditorScreen(
             formErrors = result.errors
             if (result.errors.isNotEmpty()) {
                 jsonError = result.errors.first()
+                errorTick++
                 false
             } else {
                 jsonError = null
@@ -194,6 +298,7 @@ fun ConfigEditorScreen(
         }.getOrElse {
             jsonError = it.message ?: "Invalid JSON."
             formErrors = listOf(jsonError.orEmpty())
+            errorTick++
             false
         }
     }
@@ -235,178 +340,214 @@ fun ConfigEditorScreen(
         val validation = XrayConfigFactory.validate(candidate, settings)
         if (!validation.isValid) {
             formErrors = validation.errors
+            errorTick++
             return
         }
         viewModel.saveProfile(candidate)
         onBack()
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .imePadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Row(
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(4.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer)
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .fillMaxSize()
+                .imePadding()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 20.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onPrimaryContainer)
-            }
-            Column(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
-                Text(
-                    if (draft.protocol == VpnProtocol.SSH) "SSH" else "V2Ray / Xray",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-                Text(
-                    if (existing == null) "New configuration" else "Edit configuration",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f)
-                )
-            }
-            IconButton(onClick = { mode = 1 }) {
-                Icon(Icons.Rounded.FormatAlignLeft, contentDescription = "Open JSON editor", tint = MaterialTheme.colorScheme.onPrimaryContainer)
-            }
-            IconButton(onClick = ::pasteFromClipboard) {
-                Icon(Icons.Rounded.ContentPaste, contentDescription = "Paste configuration", tint = MaterialTheme.colorScheme.onPrimaryContainer)
-            }
-            IconButton(onClick = ::save) {
-                Icon(Icons.Rounded.Check, contentDescription = "Save configuration", tint = MaterialTheme.colorScheme.onPrimaryContainer)
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Rounded.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "Stored locally on this device. V2-TUN never uploads profiles.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        V2TextField(
-            value = draft.name,
-            onValueChange = { draft = draft.copy(name = it) },
-            label = "Display name",
-            placeholder = "e.g. Work · Tokyo",
-            isError = formErrors.any { it.contains("name", ignoreCase = true) }
-        )
-
-        V2SegmentedControl(
-            options = listOf("Guided form", "JSON editor"),
-            selectedIndex = mode,
-            onSelect = { next ->
-                if (next == mode) return@V2SegmentedControl
-                if (next == 1) {
-                    if (jsonText.isBlank() || guidedTouched) {
-                        jsonText = generatedJson
-                        jsonDirty = false
-                        guidedTouched = false
-                    }
-                    mode = 1
-                } else {
-                    if (jsonText.isNotBlank()) {
-                        ShareLinkParser.parseJsonConfig(jsonText)?.let { mergeParsed(it) }
-                    }
-                    mode = 0
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { if (hasChanges) showDiscard = true else onBack() }) {
+                    Icon(Icons.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onPrimaryContainer)
                 }
-                jsonError = null
-                formErrors = emptyList()
+                Column(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
+                    Text(
+                        if (draft.protocol == VpnProtocol.SSH) "SSH" else "V2Ray / Xray",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        if (existing == null) "New configuration" else "Edit configuration",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f)
+                    )
+                }
+                IconButton(onClick = { switchMode(if (mode == 1) 0 else 1) }) {
+                    Icon(
+                        Icons.Rounded.FormatAlignLeft,
+                        contentDescription = if (mode == 1) "Switch to guided form" else "Open JSON editor",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+                IconButton(onClick = ::pasteFromClipboard) {
+                    Icon(Icons.Rounded.ContentPaste, contentDescription = "Paste configuration", tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                }
+                IconButton(onClick = ::save) {
+                    Icon(Icons.Rounded.Check, contentDescription = "Save configuration", tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                }
             }
-        )
 
-        if (formErrors.isNotEmpty()) {
-            ErrorList(formErrors)
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Stored locally on this device. V2-TUN never uploads profiles.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            V2TextField(
+                value = draft.name,
+                onValueChange = { draft = draft.copy(name = it) },
+                label = "Display name",
+                placeholder = "e.g. Work · Tokyo",
+                isError = formErrors.has("name")
+            )
+
+            V2SegmentedControl(
+                options = listOf("Guided form", "JSON editor"),
+                selectedIndex = mode,
+                onSelect = ::switchMode
+            )
+
+            if (formErrors.isNotEmpty()) {
+                ErrorList(formErrors)
+            }
+
+            if (mode == 0) {
+                if (draft.protocol == VpnProtocol.SSH) {
+                    SshGuidedForm(
+                        draft = draft,
+                        errors = formErrors,
+                        onDraftChange = {
+                            draft = it
+                            guidedTouched = true
+                        },
+                        onShowPreview = { showPreview = !showPreview },
+                        showPreview = showPreview,
+                        generatedJson = generatedJson,
+                        onCopyJson = {
+                            clipboard.setText(AnnotatedString(generatedJson))
+                            feedback = "Generated JSON copied."
+                        }
+                    )
+                } else {
+                    GuidedForm(
+                        draft = draft,
+                        errors = formErrors,
+                        onDraftChange = {
+                            draft = it
+                            guidedTouched = true
+                        },
+                        secretVisible = secretVisible,
+                        onToggleSecret = { secretVisible = !secretVisible },
+                        onPaste = ::pasteFromClipboard,
+                        onShowPreview = { showPreview = !showPreview },
+                        showPreview = showPreview,
+                        generatedJson = generatedJson,
+                        onCopyJson = {
+                            clipboard.setText(AnnotatedString(generatedJson))
+                            feedback = "Generated JSON copied."
+                        }
+                    )
+                }
+            } else {
+                JsonForm(
+                    jsonText = jsonText,
+                    onJsonChange = {
+                        jsonText = it
+                        jsonDirty = true
+                        jsonError = null
+                    },
+                    // Validation errors are already listed at the top; do not repeat them here.
+                    jsonError = if (formErrors.isEmpty()) jsonError else null,
+                    onFormat = {
+                        runCatching {
+                            jsonText = JSONObject(jsonText).toString(2)
+                            jsonError = null
+                            feedback = "JSON formatted."
+                        }.onFailure { jsonError = it.message ?: "Invalid JSON." }
+                    },
+                    onValidate = { validateJson() },
+                    onCopy = {
+                        clipboard.setText(AnnotatedString(jsonText))
+                        feedback = "JSON copied."
+                    },
+                    onPaste = ::pasteFromClipboard
+                )
+            }
+
+            GradientButton(
+                text = if (existing == null) "Save configuration" else "Update configuration",
+                onClick = ::save,
+                icon = Icons.Rounded.Check
+            )
+            Spacer(Modifier.height(10.dp))
         }
 
-        if (mode == 0) {
-            if (draft.protocol == VpnProtocol.SSH) {
-                SshGuidedForm(
-                    draft = draft,
-                    onDraftChange = {
-                        draft = it
-                        guidedTouched = true
-                    },
-                    onShowPreview = { showPreview = !showPreview },
-                    showPreview = showPreview,
-                    generatedJson = generatedJson,
-                    onCopyJson = {
-                        clipboard.setText(AnnotatedString(generatedJson))
-                        feedback = "Generated JSON copied."
-                    }
-                )
-            } else {
-                GuidedForm(
-                    draft = draft,
-                    onDraftChange = {
-                        draft = it
-                        guidedTouched = true
-                    },
-                    secretVisible = secretVisible,
-                    onToggleSecret = { secretVisible = !secretVisible },
-                    onPaste = ::pasteFromClipboard,
-                    onShowPreview = { showPreview = !showPreview },
-                    showPreview = showPreview,
-                    generatedJson = generatedJson,
-                    onCopyJson = {
-                        clipboard.setText(AnnotatedString(generatedJson))
-                        feedback = "Generated JSON copied."
-                    }
-                )
+        feedback?.let { message ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .imePadding()
+                    .padding(horizontal = 20.dp, vertical = 16.dp)
+            ) {
+                FeedbackBanner(message, isError = false)
             }
-        } else {
-            JsonForm(
-                jsonText = jsonText,
-                onJsonChange = {
-                    jsonText = it
-                    jsonDirty = true
-                    jsonError = null
-                },
-                jsonError = jsonError,
-                onFormat = {
-                    runCatching {
-                        jsonText = JSONObject(jsonText).toString(2)
-                        jsonError = null
-                        feedback = "JSON formatted."
-                    }.onFailure { jsonError = it.message ?: "Invalid JSON." }
-                },
-                onValidate = { validateJson() },
-                onCopy = {
-                    clipboard.setText(AnnotatedString(jsonText))
-                    feedback = "JSON copied."
-                },
-                onPaste = ::pasteFromClipboard
+        }
+
+        if (showDiscard) {
+            ConfirmDialog(
+                title = "Discard changes?",
+                text = "Your edits to this configuration haven't been saved.",
+                confirmLabel = "Discard",
+                destructive = true,
+                onConfirm = onBack,
+                onDismiss = { showDiscard = false }
             )
         }
-
-        if (feedback != null) {
-            FeedbackBanner(feedback.orEmpty(), isError = false)
+        if (pendingGuided) {
+            ConfirmDialog(
+                title = "Switch to the guided form?",
+                text = "The guided form can't keep hand-written JSON such as custom routing or extra outbounds. " +
+                    "If you save from the guided form, your JSON is replaced by a generated configuration.",
+                confirmLabel = "Switch",
+                destructive = true,
+                onConfirm = { applyModeSwitch(0) },
+                onDismiss = { pendingGuided = false }
+            )
         }
-
-        GradientButton(
-            text = if (existing == null) "Save configuration" else "Update configuration",
-            onClick = ::save,
-            icon = Icons.Rounded.Check
-        )
-        Spacer(Modifier.height(10.dp))
     }
 }
 
 @Composable
+private fun VisibilityToggle(visible: Boolean, what: String, onToggle: () -> Unit) {
+    IconButton(onClick = onToggle) {
+        Icon(
+            if (visible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+            contentDescription = if (visible) "Hide $what" else "Show $what",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(19.dp)
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun SshGuidedForm(
     draft: VpnProfile,
+    errors: List<String>,
     onDraftChange: (VpnProfile) -> Unit,
     onShowPreview: () -> Unit,
     showPreview: Boolean,
@@ -415,7 +556,8 @@ private fun SshGuidedForm(
 ) {
     var portText by remember(draft.id) { mutableStateOf(draft.port.toString()) }
     var udpGwPortText by remember(draft.id) { mutableStateOf(draft.sshUdpGwPort.toString()) }
-    val isSsh = draft.protocol == VpnProtocol.SSH
+    var passwordVisible by remember { mutableStateOf(false) }
+    var keyVisible by remember { mutableStateOf(false) }
     LaunchedEffect(draft.port) {
         if (draft.port != 0 && portText.toIntOrNull() != draft.port) portText = draft.port.toString()
     }
@@ -430,21 +572,27 @@ private fun SshGuidedForm(
         options = VpnProtocol.entries,
         label = "Protocol",
         labelFor = { it.label },
-        onSelect = { onDraftChange(draft.copy(protocol = it)) }
+        onSelect = { onDraftChange(switchProtocol(draft, it)) }
+    )
+    Text(
+        "Switching between SSH and other protocols clears the username, password / UUID and private key.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
     )
 
-    FormSection(title = "Method", eyebrow = if (isSsh) "SSH · CONNECTION" else "XRAY · CONNECTION") {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    FormSection(title = "Method", eyebrow = "SSH · CONNECTION") {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             SshToggleChip("Payload", draft.sshPayloadEnabled) {
                 onDraftChange(draft.copy(sshPayloadEnabled = !draft.sshPayloadEnabled))
             }
             SshToggleChip("TLS", draft.sshTlsEnabled) {
                 onDraftChange(draft.copy(sshTlsEnabled = !draft.sshTlsEnabled))
             }
-            if (isSsh) {
-                SshToggleChip("Fast Open", draft.sshTcpFastOpen) {
-                    onDraftChange(draft.copy(sshTcpFastOpen = !draft.sshTcpFastOpen))
-                }
+            SshToggleChip("Fast Open", draft.sshTcpFastOpen) {
+                onDraftChange(draft.copy(sshTcpFastOpen = !draft.sshTcpFastOpen))
             }
         }
         Text(
@@ -459,13 +607,10 @@ private fun SshGuidedForm(
             V2TextField(
                 value = draft.sni,
                 onValueChange = { onDraftChange(draft.copy(sni = it)) },
-                label = "SNI / server name",
-                placeholder = "cdn.example.com"
-            )
-            Text(
-                "Shown only while TLS is enabled.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                label = "SNI / server name (optional)",
+                placeholder = "cdn.example.com",
+                keyboardOptions = PlainUri,
+                supportingText = "Leave blank to use the SSH host."
             )
         }
     }
@@ -476,28 +621,33 @@ private fun SshGuidedForm(
                 value = draft.sshPayload,
                 onValueChange = { onDraftChange(draft.copy(sshPayload = it)) },
                 label = "Custom payload",
-                placeholder = "GET / HTTP/1.1[crlf]Host: [host][crlf][crlf]"
+                placeholder = "GET / HTTP/1.1[crlf]Host: [host][crlf][crlf]",
+                singleLine = false,
+                minLines = 3,
+                keyboardOptions = PlainText,
+                isError = errors.has("payload cannot"),
+                supportingText = "Use [crlf] for line breaks; [host] is filled in when connecting."
             )
             V2TextField(
                 value = draft.sshRemoteProxy,
                 onValueChange = { onDraftChange(draft.copy(sshRemoteProxy = it)) },
                 label = "Remote proxy (optional)",
-                placeholder = "proxy.example.net:8080"
-            )
-            Text(
-                "Use host:port. Proxy credentials in the address are not sent; if the proxy needs a login, add a Proxy-Authorization header to the payload.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                placeholder = "proxy.example.net:8080",
+                keyboardOptions = PlainUri,
+                isError = errors.has("proxy credentials"),
+                supportingText = "host:port. Credentials in the address are not sent; if the proxy needs a login, add a Proxy-Authorization header to the payload."
             )
         }
     }
 
-    FormSection(title = "Account", eyebrow = if (isSsh) "SSH · CREDENTIALS" else "XRAY · CREDENTIALS") {
+    FormSection(title = "Account", eyebrow = "SSH · CREDENTIALS") {
         V2TextField(
             value = draft.server,
             onValueChange = { onDraftChange(draft.copy(server = it)) },
             label = "SSH Host",
-            placeholder = "ssh.example.net"
+            placeholder = "ssh.example.net",
+            keyboardOptions = PlainUri,
+            isError = errors.has("server address")
         )
         V2TextField(
             value = portText,
@@ -508,39 +658,54 @@ private fun SshGuidedForm(
             },
             label = "SSH Port",
             placeholder = "22",
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            keyboardOptions = NumberOnly,
+            isError = draft.port !in 1..65535,
+            supportingText = if (draft.port !in 1..65535) "Enter a port from 1 to 65535." else null
         )
-        AnimatedVisibility(visible = isSsh) {
-            V2TextField(
-                value = udpGwPortText,
-                onValueChange = { value ->
-                    val digits = value.filter { it.isDigit() }.take(5)
-                    udpGwPortText = digits
-                    onDraftChange(draft.copy(sshUdpGwPort = digits.toIntOrNull()?.coerceIn(1, 65535) ?: 7300))
-                },
-                label = "BadVPN UDPGW port",
-                placeholder = "7300",
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-            )
-        }
+        V2TextField(
+            value = udpGwPortText,
+            onValueChange = { value ->
+                val digits = value.filter { it.isDigit() }.take(5)
+                udpGwPortText = digits
+                onDraftChange(draft.copy(sshUdpGwPort = digits.toIntOrNull()?.coerceIn(1, 65535) ?: 7300))
+            },
+            label = "BadVPN UDPGW port",
+            placeholder = "7300",
+            keyboardOptions = NumberOnly,
+            supportingText = "Leave blank to use 7300."
+        )
         V2TextField(
             value = draft.host,
             onValueChange = { onDraftChange(draft.copy(host = it)) },
             label = "SSH username",
-            placeholder = "tunnel-user"
+            placeholder = "tunnel-user",
+            keyboardOptions = PlainText
         )
         V2TextField(
             value = draft.secret,
             onValueChange = { onDraftChange(draft.copy(secret = it)) },
             label = "SSH password",
-            placeholder = "Password",
-            visualTransformation = PasswordVisualTransformation()
+            placeholder = "Password (or use a private key)",
+            keyboardOptions = SecretText,
+            isError = errors.has("password or private key"),
+            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+            trailing = {
+                VisibilityToggle(passwordVisible, "password") { passwordVisible = !passwordVisible }
+            }
         )
         V2TextField(
             value = draft.sshPrivateKey,
             onValueChange = { onDraftChange(draft.copy(sshPrivateKey = it)) },
             label = "Private key (optional)",
-            placeholder = "-----BEGIN OPENSSH PRIVATE KEY-----"
+            placeholder = "-----BEGIN OPENSSH PRIVATE KEY-----",
+            singleLine = false,
+            minLines = 3,
+            keyboardOptions = SecretText,
+            isError = errors.has("password or private key"),
+            visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+            trailing = {
+                VisibilityToggle(keyVisible, "private key") { keyVisible = !keyVisible }
+            }
         )
     }
 
@@ -601,7 +766,7 @@ private fun SshToggleChip(label: String, selected: Boolean, onClick: () -> Unit)
                 RoundedCornerShape(14.dp)
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 21.dp, vertical = 13.dp)
+            .padding(horizontal = 18.dp, vertical = 13.dp)
     ) {
         Text(label, style = MaterialTheme.typography.labelLarge, color = if (selected) scheme.primary else scheme.onSurfaceVariant)
     }
@@ -610,6 +775,7 @@ private fun SshToggleChip(label: String, selected: Boolean, onClick: () -> Unit)
 @Composable
 private fun GuidedForm(
     draft: VpnProfile,
+    errors: List<String>,
     onDraftChange: (VpnProfile) -> Unit,
     secretVisible: Boolean,
     onToggleSecret: () -> Unit,
@@ -647,20 +813,12 @@ private fun GuidedForm(
             options = VpnProtocol.entries,
             label = "Protocol",
             labelFor = { it.label },
-            onSelect = { protocol ->
-                onDraftChange(
-                    draft.copy(
-                        protocol = protocol,
-                        security = when (protocol) {
-                            VpnProtocol.SHADOWSOCKS -> Security.NONE
-                            else -> if (draft.security == Security.NONE) Security.TLS else draft.security
-                        },
-                        transport = if (protocol == VpnProtocol.SHADOWSOCKS) Transport.TCP else draft.transport,
-                        flow = if (protocol == VpnProtocol.VLESS) draft.flow else "",
-                        method = if (protocol == VpnProtocol.SHADOWSOCKS) draft.method else draft.method
-                    )
-                )
-            }
+            onSelect = { protocol -> onDraftChange(switchProtocol(draft, protocol)) }
+        )
+        Text(
+            "Switching to SSH clears the UUID / password and the host fields.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             V2TextField(
@@ -669,7 +827,8 @@ private fun GuidedForm(
                 label = "Server address",
                 placeholder = "vpn.example.com",
                 modifier = Modifier.weight(1f),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                keyboardOptions = PlainUri,
+                isError = errors.has("server address")
             )
             V2TextField(
                 value = portText,
@@ -680,7 +839,15 @@ private fun GuidedForm(
                 },
                 label = "Port",
                 modifier = Modifier.width(104.dp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                keyboardOptions = NumberOnly,
+                isError = draft.port !in 1..65535
+            )
+        }
+        if (draft.port !in 1..65535) {
+            Text(
+                "Enter a port from 1 to 65535.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
             )
         }
     }
@@ -701,6 +868,8 @@ private fun GuidedForm(
                 VpnProtocol.VLESS, VpnProtocol.VMESS -> "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
                 else -> "Server password"
             },
+            keyboardOptions = if (draft.protocol == VpnProtocol.VLESS || draft.protocol == VpnProtocol.VMESS) PlainText else SecretText,
+            isError = errors.has("uuid", "user id", "the password is required"),
             visualTransformation = if (secretVisible || draft.protocol == VpnProtocol.VLESS || draft.protocol == VpnProtocol.VMESS) {
                 VisualTransformation.None
             } else {
@@ -708,14 +877,7 @@ private fun GuidedForm(
             },
             trailing = {
                 if (draft.protocol == VpnProtocol.TROJAN || draft.protocol == VpnProtocol.SHADOWSOCKS) {
-                    IconButton(onClick = onToggleSecret) {
-                        Icon(
-                            if (secretVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                            contentDescription = if (secretVisible) "Hide password" else "Show password",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
+                    VisibilityToggle(secretVisible, "password", onToggleSecret)
                 }
             }
         )
@@ -744,7 +906,7 @@ private fun GuidedForm(
                 },
                 label = "Alter ID",
                 leadingText = "AEAD",
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                keyboardOptions = NumberOnly
             )
         }
         if (draft.protocol == VpnProtocol.VLESS) {
@@ -752,7 +914,8 @@ private fun GuidedForm(
                 value = draft.flow,
                 onValueChange = { onDraftChange(draft.copy(flow = it)) },
                 label = "Flow (optional)",
-                placeholder = "xtls-rprx-vision"
+                placeholder = "xtls-rprx-vision",
+                keyboardOptions = PlainText
             )
         }
     }
@@ -771,13 +934,15 @@ private fun GuidedForm(
                     value = draft.path,
                     onValueChange = { onDraftChange(draft.copy(path = it)) },
                     label = "Path",
-                    placeholder = "/"
+                    placeholder = "/",
+                    keyboardOptions = PlainUri
                 )
                 V2TextField(
                     value = draft.host,
                     onValueChange = { onDraftChange(draft.copy(host = it)) },
                     label = "Host / CDN hostname (optional)",
-                    placeholder = "cdn.example.com"
+                    placeholder = "cdn.example.com",
+                    keyboardOptions = PlainUri
                 )
             }
             Transport.GRPC -> {
@@ -785,7 +950,8 @@ private fun GuidedForm(
                     value = draft.serviceName,
                     onValueChange = { onDraftChange(draft.copy(serviceName = it)) },
                     label = "gRPC service name",
-                    placeholder = "grpc-service"
+                    placeholder = "grpc-service",
+                    keyboardOptions = PlainText
                 )
             }
             Transport.MKCP -> {
@@ -830,7 +996,8 @@ private fun GuidedForm(
                 value = draft.sni,
                 onValueChange = { onDraftChange(draft.copy(sni = it)) },
                 label = "Server name (SNI)",
-                placeholder = "example.com"
+                placeholder = "example.com",
+                keyboardOptions = PlainUri
             )
             V2Dropdown(
                 selected = draft.fingerprint.ifBlank { "chrome" },
@@ -845,19 +1012,23 @@ private fun GuidedForm(
                 value = draft.publicKey,
                 onValueChange = { onDraftChange(draft.copy(publicKey = it)) },
                 label = "REALITY public key",
-                placeholder = "Base64 public key"
+                placeholder = "Base64 public key",
+                keyboardOptions = PlainText,
+                isError = errors.has("public key")
             )
             V2TextField(
                 value = draft.shortId,
                 onValueChange = { onDraftChange(draft.copy(shortId = it)) },
                 label = "Short ID",
-                placeholder = "Short ID"
+                placeholder = "Short ID",
+                keyboardOptions = PlainText
             )
             V2TextField(
                 value = draft.spiderX,
                 onValueChange = { onDraftChange(draft.copy(spiderX = it)) },
                 label = "Spider path",
-                placeholder = "/"
+                placeholder = "/",
+                keyboardOptions = PlainUri
             )
         }
         if (draft.security == Security.TLS) {
@@ -1072,6 +1243,8 @@ private fun FeedbackBanner(text: String, isError: Boolean) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
+            // Opaque base so the floating banner stays readable over scrolling content.
+            .background(scheme.surface)
             .background(color.copy(alpha = 0.09f))
             .border(1.dp, color.copy(alpha = 0.25f), RoundedCornerShape(16.dp))
             .padding(horizontal = 13.dp, vertical = 11.dp),
