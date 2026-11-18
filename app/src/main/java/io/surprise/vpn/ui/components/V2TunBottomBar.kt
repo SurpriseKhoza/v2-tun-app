@@ -5,7 +5,6 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Dashboard
@@ -29,8 +29,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -40,7 +40,7 @@ val v2TunNavItems = listOf(
     V2TunNavItem("dashboard", "Home", Icons.Rounded.Dashboard),
     V2TunNavItem("configs", "Configs", Icons.Rounded.Dns),
     V2TunNavItem("logs", "Logs", Icons.Rounded.Info),
-    V2TunNavItem("settings", "More", Icons.Rounded.Settings)
+    V2TunNavItem("settings", "Settings", Icons.Rounded.Settings)
 )
 
 @Composable
@@ -75,14 +75,20 @@ fun V2TunBottomBar(
                     .weight(1f)
                     .clip(RoundedCornerShape(13.dp))
                     .background(scheme.primary.copy(alpha = 0.13f * progress))
-                    .clickable { onNavigate(item.route) }
+                    // Tab role + selected state so screen readers announce the active tab.
+                    .selectable(
+                        selected = selected,
+                        role = Role.Tab,
+                        onClick = { onNavigate(item.route) }
+                    )
                     .padding(vertical = 6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                Icon(item.icon, item.label, tint = tint, modifier = Modifier.size(19.dp))
+                // Decorative: the visible label already names the tab.
+                Icon(item.icon, contentDescription = null, tint = tint, modifier = Modifier.size(19.dp))
                 Spacer(Modifier.height(3.dp))
-                Text(item.label, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = tint)
+                Text(item.label, style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp), color = tint)
             }
         }
     }
