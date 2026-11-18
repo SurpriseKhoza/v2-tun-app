@@ -48,10 +48,18 @@ class XrayConfigFactoryTest {
     fun validatesSshDependencies() {
         val noAuth = sshProfile().copy(secret = "", sshPrivateKey = "")
         assertFalse(XrayConfigFactory.validate(noAuth, AppSettings()).isValid)
-        val noSni = sshProfile().copy(sni = "")
-        assertFalse(XrayConfigFactory.validate(noSni, AppSettings()).isValid)
         val noPayload = sshProfile().copy(sshPayload = "")
         assertFalse(XrayConfigFactory.validate(noPayload, AppSettings()).isValid)
+    }
+
+    @Test
+    fun sshTlsWithoutSniIsAllowedAndWarns() {
+        // The runtime falls back to the SSH host as the TLS server name, so a blank SNI must
+        // not block saving. It only warns.
+        val noSni = sshProfile().copy(sni = "")
+        val result = XrayConfigFactory.validate(noSni, AppSettings())
+        assertTrue(result.errors.toString(), result.isValid)
+        assertTrue(result.warnings.any { it.contains("SNI", ignoreCase = true) })
     }
 
     private fun vlessProfile() = VpnProfile(

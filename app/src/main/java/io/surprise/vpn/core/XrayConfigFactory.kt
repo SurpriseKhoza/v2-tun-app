@@ -102,7 +102,8 @@ object XrayConfigFactory {
                     errors += "SSH password or private key is required."
                 }
                 if (profile.sshTlsEnabled && profile.sni.isBlank()) {
-                    errors += "TLS requires an SNI / server name."
+                    // Not an error: the runtime falls back to the SSH host as the TLS server name.
+                    warnings += "No SNI set; TLS will use the SSH host as the server name."
                 }
                 if (profile.sshPayloadEnabled && profile.sshPayload.isBlank()) {
                     errors += "Payload cannot be empty when Payload is enabled."
