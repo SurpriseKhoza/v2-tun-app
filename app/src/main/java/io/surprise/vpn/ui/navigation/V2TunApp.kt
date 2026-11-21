@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
@@ -53,10 +54,14 @@ import io.surprise.vpn.ui.configs.ConfigEditorScreen
 import io.surprise.vpn.ui.configs.ConfigsScreen
 import io.surprise.vpn.ui.dashboard.NpvDashboardScreen
 import io.surprise.vpn.ui.logs.LogsScreen
+import io.surprise.vpn.ui.settings.AppPickerScreen
 import io.surprise.vpn.ui.settings.SettingsScreen
-import io.surprise.vpn.ui.tools.ToolsScreen
+import kotlinx.coroutines.launch
 
 private val topLevelRoutes = setOf("dashboard", "configs", "logs", "settings")
+
+private fun isTabSwitch(from: String?, to: String?): Boolean =
+    from in topLevelRoutes && to in topLevelRoutes
 
 @Composable
 fun V2TunApp(viewModel: MainViewModel) {
@@ -74,7 +79,14 @@ fun V2TunApp(viewModel: MainViewModel) {
     LaunchedEffect(Unit) {
         viewModel.messages.collect { message ->
             snackbarIsError = message.isError
-            snackbarHostState.showSnackbar(message.text)
+            // Replace the current message instead of queueing behind it.
+            snackbarHostState.currentSnackbarData?.dismiss()
+            launch {
+                snackbarHostState.showSnackbar(
+                    message = message.text,
+                    duration = if (message.isError) SnackbarDuration.Long else SnackbarDuration.Short
+                )
+            }
         }
     }
 
@@ -176,15 +188,29 @@ fun V2TunApp(viewModel: MainViewModel) {
                     navController = navController,
                     startDestination = "dashboard",
                     modifier = Modifier.fillMaxSize(),
+                    // Switching between bottom-bar tabs only cross-fades; sliding sideways
+                    // implied a hierarchy that tabs do not have.
                     enterTransition = {
-                        fadeIn(tween(220)) + slideInHorizontally(tween(260)) { it / 18 }
+                        if (isTabSwitch(initialState.destination.route, targetState.destination.route)) {
+                            fadeIn(tween(200))
+                        } else {
+                            fadeIn(tween(220)) + slideInHorizontally(tween(260)) { it / 18 }
+                        }
                     },
                     exitTransition = { fadeOut(tween(150)) },
                     popEnterTransition = {
-                        fadeIn(tween(200)) + slideInHorizontally(tween(240)) { -it / 18 }
+                        if (isTabSwitch(initialState.destination.route, targetState.destination.route)) {
+                            fadeIn(tween(200))
+                        } else {
+                            fadeIn(tween(200)) + slideInHorizontally(tween(240)) { -it / 18 }
+                        }
                     },
                     popExitTransition = {
-                        fadeOut(tween(150)) + slideOutHorizontally(tween(220)) { it / 18 }
+                        if (isTabSwitch(initialState.destination.route, targetState.destination.route)) {
+                            fadeOut(tween(150))
+                        } else {
+                            fadeOut(tween(150)) + slideOutHorizontally(tween(220)) { it / 18 }
+                        }
                     }
                 ) {
                     composable("dashboard") {
@@ -207,24 +233,22 @@ fun V2TunApp(viewModel: MainViewModel) {
                             onEdit = { id -> navController.navigate("editor?profileId=${Uri.encode(id)}") }
                         )
                     }
-                    composable("tools") {
-                        ToolsScreen(
-                            viewModel = viewModel,
-                            onOpenLogs = { navController.navigate("logs") },
-                            onOpenSettings = { navigateTopLevel("settings") }
-                        )
-                    }
                     composable("settings") {
                         SettingsScreen(
                             viewModel = viewModel,
-                            onOpenLogs = { navController.navigate("logs") }
+                            // Logs is a bottom-bar tab, so switch to it instead of stacking it.
+                            onOpenLogs = { navigateTopLevel("logs") },
+                            onOpenAppPicker = { navController.navigate("apps") }
                         )
                     }
-                    composable("logs") {
-                        LogsScreen(
+                    composable("apps") {
+                        AppPickerScreen(
                             viewModel = viewModel,
                             onBack = { navController.popBackStack() }
                         )
+                    }
+                    composable("logs") {
+                        LogsScreen(viewModel = viewModel)
                     }
                     composable(
                         route = "editor?profileId={profileId}",

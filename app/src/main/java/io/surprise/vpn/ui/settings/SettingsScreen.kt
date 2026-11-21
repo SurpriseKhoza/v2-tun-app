@@ -1,9 +1,9 @@
 package io.surprise.vpn.ui.settings
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,17 +21,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.BatterySaver
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.NotificationsActive
-import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.WifiTethering
@@ -41,6 +43,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,7 +53,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,7 +65,6 @@ import io.surprise.vpn.MainViewModel
 import io.surprise.vpn.core.XrayEngine
 import io.surprise.vpn.data.model.LogLevel
 import io.surprise.vpn.data.model.AppRoutingMode
-import io.surprise.vpn.data.model.CustomPalette
 import io.surprise.vpn.data.model.ThemeMode
 import io.surprise.vpn.data.model.ThemePalette
 import io.surprise.vpn.ui.components.SoftSurface
@@ -73,20 +77,39 @@ import io.surprise.vpn.ui.components.V2SwitchRow
 import io.surprise.vpn.ui.components.V2TextField
 import io.surprise.vpn.ui.theme.JsonTextStyle
 import io.surprise.vpn.ui.theme.paletteVisual
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import kotlinx.coroutines.delay
+
+private val PlainFieldKeyboard = KeyboardOptions(
+    capitalization = KeyboardCapitalization.None,
+    autoCorrectEnabled = false
+)
+
+private val HexColor = Regex("^#[0-9a-fA-F]{6}$")
+private val Ipv6Literal = Regex("^[0-9a-fA-F:]+$")
+
+/** Blank and “local” follow the active network; otherwise an IP literal or a URL-style server. */
+private fun isValidDnsServer(raw: String): Boolean {
+    val value = raw.trim()
+    if (value.isEmpty() || value.equals("local", ignoreCase = true)) return true
+    if (value.any { it.isWhitespace() }) return false
+    if (value.contains("://")) return value.substringAfter("://").isNotBlank()
+    val octets = value.split('.')
+    if (octets.size == 4 && octets.all { part -> part.toIntOrNull()?.let { it in 0..255 } == true }) return true
+    return value.count { it == ':' } >= 2 && Ipv6Literal.matches(value)
+}
 
 @Composable
 fun SettingsScreen(
     viewModel: MainViewModel,
     onOpenLogs: () -> Unit,
+    onOpenAppPicker: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val tunnel by viewModel.tunnel.collectAsStateWithLifecycle()
     var showLicenses by remember { mutableStateOf(false) }
+    var showTileHelp by remember { mutableStateOf(false) }
 
     fun openSystem(intent: Intent) {
         runCatching {
@@ -140,19 +163,21 @@ fun SettingsScreen(
             Spacer(Modifier.height(16.dp))
             Text("DNS servers", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(7.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                V2TextField(
-                    value = settings.dnsPrimary,
-                    onValueChange = { value -> viewModel.updateSettings { it.copy(dnsPrimary = value) } },
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
+                DebouncedField(
                     label = "Primary",
-                    modifier = Modifier.weight(1f)
-                )
-                V2TextField(
-                    value = settings.dnsSecondary,
-                    onValueChange = { value -> viewModel.updateSettings { it.copy(dnsSecondary = value) } },
+                    value = settings.dnsPrimary,
+                    modifier = Modifier.weight(1f),
+                    isValid = ::isValidDnsServer,
+                    errorText = "Use an IP, a URL such as tcp://1.1.1.1, or ‘local’."
+                ) { value -> viewModel.updateSettings { it.copy(dnsPrimary = value) } }
+                DebouncedField(
                     label = "Secondary",
-                    modifier = Modifier.weight(1f)
-                )
+                    value = settings.dnsSecondary,
+                    modifier = Modifier.weight(1f),
+                    isValid = ::isValidDnsServer,
+                    errorText = "Use an IP, a URL such as tcp://1.1.1.1, or ‘local’."
+                ) { value -> viewModel.updateSettings { it.copy(dnsSecondary = value) } }
             }
             Spacer(Modifier.height(8.dp))
             Text(
@@ -210,21 +235,34 @@ fun SettingsScreen(
                 },
                 onSelect = { mode -> viewModel.updateSettings { it.copy(appRoutingMode = mode) } }
             )
-            Spacer(Modifier.height(12.dp))
-            V2TextField(
-                value = settings.appRoutingPackages.joinToString(", "),
-                onValueChange = { value ->
-                    viewModel.updateSettings {
-                        it.copy(appRoutingPackages = value.split(',').map(String::trim).filter(String::isNotBlank).toSet())
+            AnimatedVisibility(visible = settings.appRoutingMode != AppRoutingMode.ALL) {
+                Column {
+                    Spacer(Modifier.height(10.dp))
+                    val count = settings.appRoutingPackages.size
+                    SettingActionRow(
+                        icon = Icons.Rounded.Apps,
+                        title = "Choose apps",
+                        subtitle = when (count) {
+                            0 -> "No apps selected yet"
+                            1 -> "1 app selected"
+                            else -> "$count apps selected"
+                        },
+                        onClick = onOpenAppPicker,
+                        showDivider = false,
+                        compact = true
+                    )
+                    if (settings.appRoutingMode == AppRoutingMode.ALLOWLIST && count == 0) {
+                        Text(
+                            "Pick at least one app, or the tunnel will refuse to start.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
                     }
-                },
-                label = "Package names",
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = false
-            )
+                }
+            }
             Spacer(Modifier.height(7.dp))
             Text(
-                "Use Android package names separated by commas. Changes apply on the next connection.",
+                "Changes apply on the next connection.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -235,14 +273,17 @@ fun SettingsScreen(
                 checked = settings.autoReconnect,
                 onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(autoReconnect = enabled) } }
             )
-            V2SliderRow(
-                title = "Reconnect attempts",
-                valueText = settings.reconnectAttempts.toString(),
-                value = settings.reconnectAttempts.toFloat(),
-                onValueChange = { value -> viewModel.updateSettings { it.copy(reconnectAttempts = value.toInt()) } },
-                valueRange = 0f..10f,
-                steps = 9
-            )
+            AnimatedVisibility(visible = settings.autoReconnect) {
+                val attempts = settings.reconnectAttempts.coerceIn(1, 10)
+                V2SliderRow(
+                    title = "Reconnect attempts",
+                    valueText = attempts.toString(),
+                    value = attempts.toFloat(),
+                    onValueChange = { value -> viewModel.updateSettings { it.copy(reconnectAttempts = value.toInt()) } },
+                    valueRange = 1f..10f,
+                    steps = 8
+                )
+            }
         }
 
         SectionHeader(title = "Appearance", eyebrow = "LOOK & FEEL")
@@ -299,7 +340,11 @@ fun SettingsScreen(
                                 else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
                                 shape = RoundedCornerShape(15.dp)
                             )
-                            .clickable { viewModel.updateSettings { it.copy(themePalette = palette) } }
+                            .selectable(
+                                selected = selected,
+                                role = Role.RadioButton,
+                                onClick = { viewModel.updateSettings { it.copy(themePalette = palette) } }
+                            )
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -328,7 +373,7 @@ fun SettingsScreen(
                 Text("Custom colors", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Enter six-digit hex values such as #2563EB. Changes apply instantly.",
+                    "Enter six-digit hex values such as #2563EB. Valid colors apply instantly.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -353,14 +398,16 @@ fun SettingsScreen(
                 }
             }
             Spacer(Modifier.height(14.dp))
+            val dynamicColorSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
             V2SwitchRow(
                 title = "Dynamic color",
-                description = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                description = if (dynamicColorSupported) {
                     "Use the device palette for surfaces and accents."
                 } else {
                     "Available on Android 12 and newer."
                 },
-                checked = settings.dynamicColor,
+                checked = settings.dynamicColor && dynamicColorSupported,
+                enabled = dynamicColorSupported,
                 onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(dynamicColor = enabled) } }
             )
             Spacer(Modifier.height(12.dp))
@@ -403,8 +450,9 @@ fun SettingsScreen(
             SettingActionRow(
                 icon = Icons.Rounded.WifiTethering,
                 title = "Quick Settings tile",
-                subtitle = "Add V2-TUN to the Android Quick Settings panel.",
-                onClick = { openSystem(Intent("android.settings.QUICK_SETTINGS")) }
+                subtitle = "See how to add V2-TUN to your Quick Settings panel.",
+                // There is no system settings page for this, so show the steps instead.
+                onClick = { showTileHelp = true }
             )
             SettingActionRow(
                 icon = Icons.Rounded.Terminal,
@@ -490,15 +538,70 @@ fun SettingsScreen(
     if (showLicenses) {
         LicensesDialog(onDismiss = { showLicenses = false })
     }
+    if (showTileHelp) {
+        TileHelpDialog(onDismiss = { showTileHelp = false })
+    }
+}
+
+/**
+ * A text field that keeps what you type locally, shows an inline error for invalid input, and
+ * only writes a valid value to storage after you stop typing (instead of on every keystroke).
+ */
+@Composable
+private fun DebouncedField(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    isValid: (String) -> Boolean,
+    errorText: String,
+    onCommit: (String) -> Unit
+) {
+    var text by remember { mutableStateOf(value) }
+    // Pick up changes made elsewhere (for example a restored backup).
+    LaunchedEffect(value) {
+        if (value != text.trim()) text = value
+    }
+    val valid = isValid(text)
+    LaunchedEffect(text) {
+        if (valid && text.trim() != value) {
+            delay(400)
+            onCommit(text.trim())
+        }
+    }
+    V2TextField(
+        value = text,
+        onValueChange = { text = it },
+        label = label,
+        modifier = modifier,
+        isError = !valid,
+        supportingText = if (valid) null else errorText,
+        keyboardOptions = PlainFieldKeyboard
+    )
 }
 
 @Composable
-private fun CustomColorField(label: String, value: String, onValueChange: (String) -> Unit) {
-    val swatch = runCatching { Color(android.graphics.Color.parseColor(value.trim())) }
-        .getOrElse { MaterialTheme.colorScheme.primary }
-    Row(verticalAlignment = Alignment.CenterVertically) {
+private fun CustomColorField(label: String, value: String, onCommit: (String) -> Unit) {
+    var text by remember { mutableStateOf(value) }
+    LaunchedEffect(value) {
+        if (value != text.trim()) text = value
+    }
+    val valid = HexColor.matches(text.trim())
+    LaunchedEffect(text) {
+        if (valid && text.trim() != value) {
+            delay(400)
+            onCommit(text.trim())
+        }
+    }
+    val swatch = if (valid) {
+        runCatching { Color(android.graphics.Color.parseColor(text.trim())) }
+            .getOrElse { MaterialTheme.colorScheme.primary }
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    Row(verticalAlignment = Alignment.Top) {
         Box(
             Modifier
+                .padding(top = 18.dp)
                 .size(22.dp)
                 .clip(CircleShape)
                 .background(swatch)
@@ -506,10 +609,13 @@ private fun CustomColorField(label: String, value: String, onValueChange: (Strin
         )
         Spacer(Modifier.width(9.dp))
         V2TextField(
-            value = value,
-            onValueChange = onValueChange,
+            value = text,
+            onValueChange = { text = it },
             label = label,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f),
+            isError = !valid,
+            supportingText = if (valid) null else "Use six hex digits, like #2563EB.",
+            keyboardOptions = PlainFieldKeyboard
         )
     }
     Spacer(Modifier.height(7.dp))
@@ -529,7 +635,7 @@ private fun SettingActionRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(14.dp))
-                .clickable(onClick = onClick)
+                .clickable(role = Role.Button, onClick = onClick)
                 .padding(horizontal = if (compact) 0.dp else 6.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -583,6 +689,31 @@ private fun AboutRow(label: String, value: String) {
         Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
     }
+}
+
+@Composable
+private fun TileHelpDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(26.dp),
+        title = { Text("Add the Quick Settings tile", style = MaterialTheme.typography.headlineSmall) },
+        text = {
+            Text(
+                "1. Swipe down twice from the top of the screen to open Quick Settings.\n" +
+                    "2. Tap the pencil (Edit) icon.\n" +
+                    "3. Drag the V2-TUN tile into your active tiles.\n\n" +
+                    "The exact wording differs between devices.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Got it", color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    )
 }
 
 @Composable
