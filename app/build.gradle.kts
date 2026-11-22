@@ -1,15 +1,44 @@
+import java.io.ByteArrayInputStream
+import java.io.FileInputStream
+import java.util.Base64
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val releaseKeystorePath = System.getenv("V2TUN_RELEASE_KEYSTORE").orEmpty()
-val releaseStorePassword = System.getenv("V2TUN_RELEASE_STORE_PASSWORD").orEmpty()
-val releaseKeyAlias = System.getenv("V2TUN_RELEASE_KEY_ALIAS").orEmpty()
-val releaseKeyPassword = System.getenv("V2TUN_RELEASE_KEY_PASSWORD").orEmpty()
-val releaseSigningConfigured = listOf(
-    releaseKeystorePath,
+// Signing values come from the base64 LOCAL_PROPERTIES environment variable (GitHub secret)
+// or, for local builds, from the root local.properties file. Keys: KEYSTORE_PASS,
+// ALIAS_NAME, ALIAS_PASS. The keystore itself is app/release.keystore (git-ignored).
+fun getProps(propName: String): String {
+    val propsInEnv = System.getenv("LOCAL_PROPERTIES")
+    if (!propsInEnv.isNullOrBlank()) {
+        val props = Properties()
+        props.load(ByteArrayInputStream(Base64.getDecoder().decode(propsInEnv.trim())))
+        val value = props.getProperty(propName)
+        if (value != null) {
+            return value
+        }
+    }
+    val propsFile = rootProject.file("local.properties")
+    if (propsFile.exists()) {
+        val props = Properties()
+        FileInputStream(propsFile).use { props.load(it) }
+        val value = props.getProperty(propName)
+        if (value != null) {
+            return value
+        }
+    }
+    return ""
+}
+
+val releaseKeystoreFile = file("release.keystore")
+val releaseStorePassword = getProps("KEYSTORE_PASS")
+val releaseKeyAlias = getProps("ALIAS_NAME")
+val releaseKeyPassword = getProps("ALIAS_PASS")
+val releaseSigningConfigured = releaseKeystoreFile.isFile && listOf(
     releaseStorePassword,
     releaseKeyAlias,
     releaseKeyPassword
@@ -17,9 +46,9 @@ val releaseSigningConfigured = listOf(
 val releaseRequested = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
 if (releaseRequested && !releaseSigningConfigured) {
     throw GradleException(
-        "Release signing is not configured. Set V2TUN_RELEASE_KEYSTORE, " +
-            "V2TUN_RELEASE_STORE_PASSWORD, V2TUN_RELEASE_KEY_ALIAS, and " +
-            "V2TUN_RELEASE_KEY_PASSWORD in the build environment."
+        "Release signing is not configured. Provide app/release.keystore and the " +
+            "KEYSTORE_PASS, ALIAS_NAME and ALIAS_PASS properties (LOCAL_PROPERTIES secret " +
+            "or local.properties)."
     )
 }
 
@@ -45,7 +74,7 @@ android {
     signingConfigs {
         create("production") {
             if (releaseSigningConfigured) {
-                storeFile = file(releaseKeystorePath)
+                storeFile = releaseKeystoreFile
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
