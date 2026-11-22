@@ -1,34 +1,52 @@
 # Production release signing
 
-V2-TUN release builds no longer use the debug keystore or hardcoded passwords. `app/build.gradle.kts` requires these environment variables whenever a release task is requested:
+Release builds are signed the same way as CipherTun-VPN. Nothing secret is stored in the repository.
 
-```text
-V2TUN_RELEASE_KEYSTORE
-V2TUN_RELEASE_STORE_PASSWORD
-V2TUN_RELEASE_KEY_ALIAS
-V2TUN_RELEASE_KEY_PASSWORD
+## GitHub secrets
+
+Add these two repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Content |
+| --- | --- |
+| `RELEASE_KEYSTORE_BASE64` | The release keystore, base64-encoded on a single line |
+| `LOCAL_PROPERTIES` | A properties file, base64-encoded on a single line |
+
+The decoded `LOCAL_PROPERTIES` contains:
+
+```properties
+KEYSTORE_PASS=<store password>
+ALIAS_NAME=<key alias>
+ALIAS_PASS=<key password>
 ```
 
-For a local build, point the keystore variable at the committed `RELEASE_KEYSTORE` and export the three private values in the shell:
+## How the build uses them
+
+- `.github/workflows/android-ci.yml` decodes `RELEASE_KEYSTORE_BASE64` into `app/release.keystore`, then runs `:app:assembleRelease` with `LOCAL_PROPERTIES` in the environment, and deletes the keystore afterwards.
+- `app/build.gradle.kts` reads `KEYSTORE_PASS`, `ALIAS_NAME` and `ALIAS_PASS` from the base64 `LOCAL_PROPERTIES` environment variable, or from the root `local.properties` file for local builds.
+- If either secret is missing (for example on pull requests from forks) CI builds a debug APK instead. A direct `assembleRelease` fails with a clear message when signing is not configured.
+- Pushing a tag such as `v1.0.1` attaches the signed APK to a GitHub release. Debug builds are never published.
+
+## Local release build
+
+Put the keystore at `app/release.keystore` and add the three properties to `local.properties`, then run:
 
 ```bash
-export V2TUN_RELEASE_KEYSTORE="$PWD/RELEASE_KEYSTORE"
-export V2TUN_RELEASE_STORE_PASSWORD="<store-password>"
-export V2TUN_RELEASE_KEY_ALIAS="v2tun_release"
-export V2TUN_RELEASE_KEY_PASSWORD="<key-password>"
 ./gradlew :app:assembleRelease
 ```
 
-For GitHub Actions, configure these repository secrets:
+`*.keystore` is git-ignored. Never commit the keystore or the passwords.
 
-```text
-V2TUN_RELEASE_STORE_PASSWORD
-V2TUN_RELEASE_KEY_ALIAS
-V2TUN_RELEASE_KEY_PASSWORD
+## Creating a new keystore
+
+```bash
+PASS=$(openssl rand -hex 16)
+keytool -genkeypair -keystore release.keystore -storetype PKCS12 -alias ciphertun \
+  -keyalg RSA -keysize 4096 -validity 10000 -storepass "$PASS" -keypass "$PASS" \
+  -dname "CN=CipherTun, O=CipherTun, C=ZA"
+base64 -w0 release.keystore            # -> RELEASE_KEYSTORE_BASE64
+printf 'KEYSTORE_PASS=%s\nALIAS_NAME=ciphertun\nALIAS_PASS=%s\n' "$PASS" "$PASS" | base64 -w0   # -> LOCAL_PROPERTIES
 ```
 
-The workflow checks out the committed private `RELEASE_KEYSTORE` file, sets `V2TUN_RELEASE_KEYSTORE` to its path, injects the three GitHub secrets, and builds the APK. The keystore is intentionally present because this is a private repository; restrict repository access carefully.
+PKCS12 keystores use one password for both the store and the key, so `KEYSTORE_PASS` and `ALIAS_PASS` must match.
 
-If the committed keystore or any of the three signing secrets is unavailable, GitHub Actions automatically builds and uploads a signed debug APK instead of failing. A direct local `assembleRelease` still requires the production signing variables; use `assembleDebug` locally when testing without them.
-
-The generated production key is separate from the old `app/v2tun-debug.jks`. Keep multiple secure backups of the production keystore and credentials; losing them prevents updates to an already-published Android application.
+Keep several secure backups of the keystore and its passwords. Losing them prevents updates to an already-installed app.
