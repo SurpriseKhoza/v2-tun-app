@@ -14,6 +14,7 @@
 # Signing material and private credentials
 *.jks
 *.keystore
+RELEASE_KEYSTORE
 *.p12
 *.pem
 *.key
