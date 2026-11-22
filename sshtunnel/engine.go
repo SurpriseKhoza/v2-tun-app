@@ -3,6 +3,8 @@
 // The engine authenticates to an SSH server over a direct TCP socket or the
 // payloadengine carrier, then exposes a loopback SOCKS5 listener. Xray can
 // route its TCP traffic to that listener through a normal socks outbound.
+// When Config.UDPGWPort is set the listener also accepts SOCKS5 UDP ASSOCIATE
+// and relays datagrams through a BadVPN udpgw daemon on the SSH server.
 package sshtunnel
 
 import (
@@ -48,6 +50,16 @@ type Config struct {
 	// fingerprint is supplied. It is false by default.
 	InsecureSkipHostKey bool   `json:"insecureSkipHostKey,omitempty"`
 	HostKeySHA256       string `json:"hostKeySha256,omitempty"`
+	// UDPGWPort enables UDP relaying. When it is non-zero the SOCKS5 bridge
+	// accepts UDP ASSOCIATE and carries datagrams through a BadVPN udpgw daemon
+	// that listens on 127.0.0.1:UDPGWPort on the SSH server (conventionally
+	// 7300), reached over an SSH direct-tcpip channel. Zero keeps the bridge
+	// TCP-only.
+	UDPGWPort int `json:"udpGwPort,omitempty"`
+	// TCPFastOpen asks the kernel to use TCP Fast Open for the outgoing carrier
+	// connection (TCP_FASTOPEN_CONNECT on Linux/Android). It is best effort: the
+	// connection silently falls back to a normal handshake when unsupported.
+	TCPFastOpen bool `json:"tcpFastOpen,omitempty"`
 }
 
 func (c Config) timeout() time.Duration {
@@ -66,6 +78,9 @@ type Session struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	result    payloadengine.Result
+	// dialRemote opens a TCP connection from the SSH server's side. It is the
+	// SSH client's Dial in production and replaceable in tests.
+	dialRemote func(network, address string) (net.Conn, error)
 }
 
 // Start authenticates the SSH server and starts a loopback SOCKS5 listener.
@@ -84,6 +99,9 @@ func Start(ctx context.Context, cfg Config) (*Session, error) {
 	}
 	if cfg.ProxyHost != "" && (cfg.ProxyPort < 1 || cfg.ProxyPort > 65535) {
 		return nil, errors.New("payload proxy port is invalid")
+	}
+	if cfg.UDPGWPort < 0 || cfg.UDPGWPort > 65535 {
+		return nil, errors.New("udpgw port is invalid")
 	}
 	if cfg.FollowRedirects == false && cfg.MaxRedirects == 0 {
 		// Preserve the caller's explicit false while keeping the carrier's
@@ -129,6 +147,7 @@ func Start(ctx context.Context, cfg Config) (*Session, error) {
 	}
 	child, cancel := context.WithCancel(ctx)
 	s := &Session{cfg: cfg, client: client, listener: listener, ctx: child, cancel: cancel, result: result}
+	s.dialRemote = client.Dial
 	go s.acceptLoop()
 	return s, nil
 }
@@ -166,11 +185,22 @@ func (s *Session) handleSocks(conn net.Conn) {
 	if err := negotiateSocks5(conn); err != nil {
 		return
 	}
-	host, port, err := readSocksConnect(conn)
+	cmd, host, port, err := readSocksRequest(conn)
 	if err != nil {
 		return
 	}
-	remote, err := s.client.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	switch cmd {
+	case socksCmdConnect:
+		s.handleConnect(conn, host, port)
+	case socksCmdUDPAssociate:
+		s.handleUDPAssociate(conn)
+	default:
+		_, _ = conn.Write(socksReply(socksReplyCommandNotSupported, nil))
+	}
+}
+
+func (s *Session) handleConnect(conn net.Conn, host string, port int) {
+	remote, err := s.dialRemote("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		_, _ = conn.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
@@ -196,43 +226,58 @@ func negotiateSocks5(conn net.Conn) error {
 	return nil
 }
 
+// readSocksConnect reads a request and requires it to be CONNECT.
 func readSocksConnect(conn net.Conn) (string, int, error) {
-	var head [4]byte
-	if _, err := io.ReadFull(conn, head[:]); err != nil || head[0] != 5 || head[1] != 1 {
+	cmd, host, port, err := readSocksRequest(conn)
+	if err != nil {
+		return "", 0, err
+	}
+	if cmd != socksCmdConnect {
 		return "", 0, errors.New("SOCKS5 CONNECT is required")
+	}
+	return host, port, nil
+}
+
+// readSocksRequest reads a full SOCKS5 request (VER CMD RSV ATYP ADDR PORT) and
+// returns the command with its target. For UDP ASSOCIATE the target is the
+// client's expected UDP source and is normally ignored.
+func readSocksRequest(conn net.Conn) (byte, string, int, error) {
+	var head [4]byte
+	if _, err := io.ReadFull(conn, head[:]); err != nil || head[0] != 5 {
+		return 0, "", 0, errors.New("invalid SOCKS5 request")
 	}
 	var host string
 	switch head[3] {
 	case 1:
 		var b [4]byte
 		if _, err := io.ReadFull(conn, b[:]); err != nil {
-			return "", 0, err
+			return 0, "", 0, err
 		}
 		host = net.IP(b[:]).String()
 	case 3:
 		var size [1]byte
 		if _, err := io.ReadFull(conn, size[:]); err != nil || size[0] == 0 || int(size[0]) > maxSocksName {
-			return "", 0, errors.New("invalid SOCKS5 domain")
+			return 0, "", 0, errors.New("invalid SOCKS5 domain")
 		}
 		b := make([]byte, int(size[0]))
 		if _, err := io.ReadFull(conn, b); err != nil {
-			return "", 0, err
+			return 0, "", 0, err
 		}
 		host = string(b)
 	case 4:
 		b := make([]byte, net.IPv6len)
 		if _, err := io.ReadFull(conn, b); err != nil {
-			return "", 0, err
+			return 0, "", 0, err
 		}
 		host = net.IP(b).String()
 	default:
-		return "", 0, errors.New("unsupported SOCKS5 address type")
+		return 0, "", 0, errors.New("unsupported SOCKS5 address type")
 	}
 	var port [2]byte
 	if _, err := io.ReadFull(conn, port[:]); err != nil {
-		return "", 0, err
+		return 0, "", 0, err
 	}
-	return host, int(port[0])<<8 | int(port[1]), nil
+	return head[1], host, int(port[0])<<8 | int(port[1]), nil
 }
 
 func copyDuplex(a, b net.Conn) {
@@ -244,7 +289,11 @@ func copyDuplex(a, b net.Conn) {
 
 func dialCarrier(ctx context.Context, cfg Config) (net.Conn, payloadengine.Result, error) {
 	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := (&net.Dialer{Timeout: cfg.timeout()}).DialContext(ctx, network, address)
+		dialer := &net.Dialer{Timeout: cfg.timeout()}
+		if cfg.TCPFastOpen {
+			dialer.Control = tcpFastOpenControl
+		}
+		conn, err := dialer.DialContext(ctx, network, address)
 		if err != nil {
 			return nil, err
 		}
