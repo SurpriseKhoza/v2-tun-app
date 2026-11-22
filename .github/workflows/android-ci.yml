@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - 'feature/**'
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - main
@@ -22,6 +24,8 @@ jobs:
     name: Build libXray AAR and V2-TUN APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      variant: ${{ steps.signing.outputs.variant }}
 
     steps:
       - name: Check out V2-TUN
@@ -106,38 +110,38 @@ jobs:
           cp libxray/libXray.aar app/libs/libXray.aar
           ls -lh app/libs/libXray.aar
 
-      - name: Select APK signing variant
+      - name: Decode signing keystore and select APK variant
         id: signing
         shell: bash
         env:
-          V2TUN_RELEASE_STORE_PASSWORD: ${{ secrets.V2TUN_RELEASE_STORE_PASSWORD }}
-          V2TUN_RELEASE_KEY_ALIAS: ${{ secrets.V2TUN_RELEASE_KEY_ALIAS }}
-          V2TUN_RELEASE_KEY_PASSWORD: ${{ secrets.V2TUN_RELEASE_KEY_PASSWORD }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          LOCAL_PROPERTIES: ${{ secrets.LOCAL_PROPERTIES }}
         run: |
-          if [ -s RELEASE_KEYSTORE ] \
-            && [ -n "$V2TUN_RELEASE_STORE_PASSWORD" ] \
-            && [ -n "$V2TUN_RELEASE_KEY_ALIAS" ] \
-            && [ -n "$V2TUN_RELEASE_KEY_PASSWORD" ]; then
-            chmod 600 RELEASE_KEYSTORE
+          set -euo pipefail
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$LOCAL_PROPERTIES" ]; then
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > app/release.keystore
+            test -s app/release.keystore
+            chmod 600 app/release.keystore
             echo "variant=release" >> "$GITHUB_OUTPUT"
-            echo "Production signing configuration found; building release APK."
+            echo "Signing secrets found; building release APK."
           else
             echo "variant=debug" >> "$GITHUB_OUTPUT"
-            echo "Production signing configuration unavailable; falling back to debug APK."
+            echo "Signing secrets unavailable (e.g. pull request from a fork); building debug APK."
           fi
 
       - name: Run V2-TUN unit tests and assemble selected APK
         env:
-          V2TUN_RELEASE_KEYSTORE: ${{ github.workspace }}/RELEASE_KEYSTORE
-          V2TUN_RELEASE_STORE_PASSWORD: ${{ secrets.V2TUN_RELEASE_STORE_PASSWORD }}
-          V2TUN_RELEASE_KEY_ALIAS: ${{ secrets.V2TUN_RELEASE_KEY_ALIAS }}
-          V2TUN_RELEASE_KEY_PASSWORD: ${{ secrets.V2TUN_RELEASE_KEY_PASSWORD }}
+          LOCAL_PROPERTIES: ${{ secrets.LOCAL_PROPERTIES }}
         run: |
           if [ "${{ steps.signing.outputs.variant }}" = "release" ]; then
             ./gradlew :app:testDebugUnitTest :app:assembleRelease --no-daemon --stacktrace
           else
             ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --stacktrace
           fi
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f app/release.keystore
 
       - name: Upload selected APK
         uses: actions/upload-artifact@v4
@@ -165,3 +169,27 @@ jobs:
             app/build/reports/**
           if-no-files-found: ignore
           retention-days: 7
+
+  # Runs only for version tags (v*) when the APK was signed with the release key.
+  publish-release:
+    name: Attach signed APK to the release
+    needs: build-android
+    if: startsWith(github.ref, 'refs/tags/v') && needs.build-android.outputs.variant == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the signed APK
+        uses: actions/download-artifact@v4
+        with:
+          name: V2-TUN-release-${{ github.sha }}
+          path: dist
+
+      - name: Name the APK after the tag
+        run: mv dist/app-release.apk "dist/V2-TUN-${GITHUB_REF_NAME}.apk"
+
+      - name: Create or update the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/V2-TUN-${{ github.ref_name }}.apk
+          generate_release_notes: true
